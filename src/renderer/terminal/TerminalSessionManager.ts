@@ -123,6 +123,24 @@ export class TerminalSessionManager {
     this.terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
 
+      // Ctrl+V / Cmd+V → paste from clipboard
+      if (e.key === 'v' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        navigator.clipboard.readText().then((text) => {
+          if (text) {
+            window.electronAPI.ptyInput({ id: this.id, data: text });
+          }
+        });
+        return false;
+      }
+
+      // Ctrl+C / Cmd+C with selection → copy to clipboard
+      if (e.key === 'c' && (e.ctrlKey || e.metaKey) && this.terminal.hasSelection()) {
+        e.preventDefault();
+        navigator.clipboard.writeText(this.terminal.getSelection());
+        return false;
+      }
+
       // Shift+Enter → Ctrl+J (multiline input for Claude Code)
       if (e.key === 'Enter' && e.shiftKey) {
         e.preventDefault();
@@ -297,11 +315,11 @@ export class TerminalSessionManager {
           const snapshotResp = await window.electronAPI.ptyGetSnapshot(this.id);
           if (snapshotResp.success && snapshotResp.data) {
             existingSnapshot = snapshotResp.data;
-            // Only check for session if we have a snapshot (nothing to resume without one)
-            const sessionResp = await window.electronAPI.ptyHasClaudeSession(this.cwd);
-            if (sessionResp.success && sessionResp.data) {
-              resume = true;
-            }
+          }
+          // Always resume if a Claude session exists (e.g. after app restart)
+          const sessionResp = await window.electronAPI.ptyHasClaudeSession(this.cwd);
+          if (sessionResp.success && sessionResp.data) {
+            resume = true;
           }
         } catch {
           // Best effort
