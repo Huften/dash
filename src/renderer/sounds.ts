@@ -14,6 +14,14 @@ import peonYes2 from './assets/sounds/peon/PeonYes2.ogg';
 import peonYes3 from './assets/sounds/peon/PeonYes3.ogg';
 import peonYes4 from './assets/sounds/peon/PeonYes4.ogg';
 
+// Rammus mode sounds (League of Legends)
+import rammusOk1 from './assets/sounds/rammus/Ok1.ogg';
+import rammusOk2 from './assets/sounds/rammus/Ok2.ogg';
+import rammusOk3 from './assets/sounds/rammus/Ok3.ogg';
+import rammusYeah1 from './assets/sounds/rammus/Yeah1.ogg';
+import rammusAlright1 from './assets/sounds/rammus/Alright1.ogg';
+import rammusHmm1 from './assets/sounds/rammus/Hmm1.ogg';
+
 export const NOTIFICATION_SOUNDS = [
   'off',
   'chime',
@@ -22,6 +30,7 @@ export const NOTIFICATION_SOUNDS = [
   'droplet',
   'marimba',
   'peon',
+  'rammus',
 ] as const;
 export type NotificationSound = (typeof NOTIFICATION_SOUNDS)[number];
 
@@ -33,9 +42,15 @@ export const SOUND_LABELS: Record<NotificationSound, string> = {
   droplet: 'Droplet',
   marimba: 'Marimba',
   peon: 'Peon',
+  rammus: 'Rammus',
 };
 
-const urls: Record<Exclude<NotificationSound, 'off' | 'peon'>, string> = {
+/** Theme sounds are sound packs with event-specific voicelines. */
+export const THEME_SOUNDS: NotificationSound[] = ['peon', 'rammus'];
+
+export type ThemeEvent = 'ready' | 'what' | 'yes';
+
+const SIMPLE_URLS: Record<string, string> = {
   chime: chimeUrl,
   cash: cashUrl,
   ping: pingUrl,
@@ -43,12 +58,17 @@ const urls: Record<Exclude<NotificationSound, 'off' | 'peon'>, string> = {
   marimba: marimbaUrl,
 };
 
-export type PeonEvent = 'ready' | 'what' | 'yes';
-
-const PEON_SOUNDS: Record<PeonEvent, string[]> = {
-  ready: [peonReady1],
-  what: [peonWhat1, peonWhat3, peonWhat4],
-  yes: [peonYes1, peonYes2, peonYes3, peonYes4],
+const THEME_SOUND_MAP: Record<string, Record<ThemeEvent, string[]>> = {
+  peon: {
+    ready: [peonReady1],
+    what: [peonWhat1, peonWhat3, peonWhat4],
+    yes: [peonYes1, peonYes2, peonYes3, peonYes4],
+  },
+  rammus: {
+    ready: [rammusOk1, rammusOk2, rammusOk3], // task complete → "OK"
+    what: [rammusHmm1], // task created → "Hmm"
+    yes: [rammusYeah1, rammusAlright1], // user submits query → "Yeah" / "Alright"
+  },
 };
 
 const cache = new Map<string, HTMLAudioElement>();
@@ -63,17 +83,29 @@ function playUrl(url: string): void {
   audio.play().catch(() => {});
 }
 
-export function playPeonSound(event: PeonEvent): void {
-  const sounds = PEON_SOUNDS[event];
+export function isThemeSound(sound: NotificationSound): boolean {
+  return THEME_SOUNDS.includes(sound);
+}
+
+export function playThemeSound(sound: NotificationSound, event: ThemeEvent): void {
+  const map = THEME_SOUND_MAP[sound];
+  if (!map) return;
+  const sounds = map[event];
   const url = sounds[Math.floor(Math.random() * sounds.length)];
   playUrl(url);
 }
 
+/** @deprecated Use playThemeSound('peon', event) instead */
+export function playPeonSound(event: ThemeEvent): void {
+  playThemeSound('peon', event);
+}
+
 export function playNotificationSound(sound: NotificationSound): void {
   if (sound === 'off') return;
-  if (sound === 'peon') {
-    playPeonSound('ready');
+  if (isThemeSound(sound)) {
+    playThemeSound(sound, 'ready');
     return;
   }
-  playUrl(urls[sound]);
+  const url = SIMPLE_URLS[sound];
+  if (url) playUrl(url);
 }
