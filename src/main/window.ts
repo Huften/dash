@@ -31,7 +31,22 @@ export function createWindow(): BrowserWindow {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
+    // Retry loading until Vite dev server is ready
+    const devUrl = 'http://localhost:3000';
+    const loadWithRetry = async (retries = 30, delay = 500) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          await mainWindow.loadURL(devUrl);
+          return;
+        } catch {
+          if (i < retries - 1) {
+            await new Promise((r) => setTimeout(r, delay));
+          }
+        }
+      }
+      console.error(`[window] Failed to connect to ${devUrl} after ${retries} attempts`);
+    };
+    loadWithRetry();
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', '..', 'renderer', 'index.html'));

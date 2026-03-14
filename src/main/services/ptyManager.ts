@@ -64,10 +64,27 @@ import { remoteControlService } from './remoteControlService';
 // Cached Claude CLI path
 let cachedClaudePath: string | null = null;
 
+export function clearCachedClaudePath(): void {
+  cachedClaudePath = null;
+}
+
 async function findClaudePath(): Promise<string | null> {
   if (cachedClaudePath) return cachedClaudePath;
 
-  // 1. Check the startup-detected cache from main.ts
+  // 1. Check custom user-configured path first
+  try {
+    const { getCustomClaudePath } = await import('../main');
+    const custom = getCustomClaudePath();
+    if (custom) {
+      await fs.promises.access(custom, fs.constants.X_OK);
+      cachedClaudePath = custom;
+      return cachedClaudePath;
+    }
+  } catch {
+    // Custom path not accessible, fall through
+  }
+
+  // 2. Check the startup-detected cache from main.ts
   try {
     const { claudeCliCache } = await import('../main');
     if (claudeCliCache.path) {
@@ -78,10 +95,12 @@ async function findClaudePath(): Promise<string | null> {
     // Best effort
   }
 
-  // 2. Try `which claude` (works when PATH is correct)
+  // 2. Try `which`/`where` to find claude in PATH
+  const isWindows = process.platform === 'win32';
   try {
-    const { stdout } = await execFileAsync('which', ['claude']);
-    const resolved = stdout.trim();
+    const whichCmd = isWindows ? 'where' : 'which';
+    const { stdout } = await execFileAsync(whichCmd, ['claude']);
+    const resolved = stdout.trim().split(/\r?\n/)[0]; // `where` may return multiple lines
     if (resolved) {
       cachedClaudePath = resolved;
       return cachedClaudePath;
@@ -92,11 +111,15 @@ async function findClaudePath(): Promise<string | null> {
 
   // 3. Direct probe common install locations
   const home = os.homedir();
-  const candidates = [
-    path.join(home, '.local/bin/claude'),
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-  ];
+  const candidates = isWindows
+    ? [
+        path.join(home, '.local', 'bin', 'claude.exe'),
+        path.join(home, 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+        path.join(home, 'AppData', 'Roaming', 'npm', 'claude'),
+        path.join(home, '.npm-global', 'claude.cmd'),
+        path.join(home, '.npm-global', 'claude'),
+      ]
+    : [path.join(home, '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'];
   for (const candidate of candidates) {
     try {
       await fs.promises.access(candidate, fs.constants.X_OK);
@@ -126,6 +149,31 @@ function buildDirectEnv(isDark: boolean): Record<string, string> {
     // Format: "fg;bg" where higher values = lighter colors
     COLORFGBG: isDark ? '15;0' : '0;15',
   };
+
+  // Windows requires additional environment variables for proper operation
+  if (process.platform === 'win32') {
+    const winVars = [
+      'APPDATA',
+      'LOCALAPPDATA',
+      'USERPROFILE',
+      'SYSTEMROOT',
+      'WINDIR',
+      'COMSPEC',
+      'TEMP',
+      'TMP',
+      'SYSTEMDRIVE',
+      'PROGRAMDATA',
+      'PROGRAMFILES',
+      'HOMEDRIVE',
+      'HOMEPATH',
+      'PATHEXT',
+    ];
+    for (const key of winVars) {
+      if (process.env[key]) {
+        env[key] = process.env[key]!;
+      }
+    }
+  }
 
   // Auth passthrough
   const authVars = [
@@ -515,8 +563,17 @@ export async function startPty(options: {
 
   const pty = getPty();
 
-  const shell = process.env.SHELL || '/bin/bash';
-  const args = ['-il']; // Login + interactive
+  let shell: string;
+  let args: string[];
+
+  if (process.platform === 'win32') {
+    // On Windows, use PowerShell or cmd.exe
+    shell = process.env.COMSPEC || 'cmd.exe';
+    args = [];
+  } else {
+    shell = process.env.SHELL || '/bin/bash';
+    args = ['-il']; // Login + interactive
+  }
 
   // Clean environment for shell
   const env = { ...process.env };
