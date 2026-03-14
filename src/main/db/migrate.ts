@@ -104,6 +104,16 @@ export function runMigrations(): void {
   } catch {
     /* already exists */
   }
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN frontend_port INTEGER`);
+  } catch {
+    /* already exists */
+  }
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN backend_port INTEGER`);
+  } catch {
+    /* already exists */
+  }
 
   rawDb.pragma('foreign_keys = ON');
 }

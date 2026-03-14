@@ -46,6 +46,8 @@ export interface Task {
   autoApprove: boolean;
   branchCreatedByDash: boolean;
   linkedItems: LinkedItem[] | null;
+  frontendPort: number | null;
+  backendPort: number | null;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;

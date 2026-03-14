@@ -78,6 +78,15 @@ export function registerDbIpc(): void {
     }
   });
 
+  ipcMain.handle('db:getUsedPorts', (_event, projectId: string) => {
+    try {
+      const data = DatabaseService.getUsedPorts(projectId);
+      return { success: true, data };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
   // ── Conversations ────────────────────────────────────────
 
   ipcMain.handle('db:getConversations', (_event, taskId: string) => {

@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { X, GitBranch, Zap, ChevronDown, Loader2, AlertCircle, Search, Upload } from 'lucide-react';
+import {
+  X,
+  GitBranch,
+  Zap,
+  ChevronDown,
+  Loader2,
+  AlertCircle,
+  Search,
+  Upload,
+  Network,
+} from 'lucide-react';
 import { SearchableMultiSelect } from './SearchableMultiSelect';
 import type { BranchInfo, GithubIssue, AzureDevOpsWorkItem, LinkedItem } from '../../shared/types';
 
@@ -10,6 +20,8 @@ export interface CreateTaskOptions {
   baseRef?: string;
   pushRemote?: boolean;
   linkedItems?: LinkedItem[];
+  frontendPort?: number;
+  backendPort?: number;
 }
 
 interface TaskModalProps {
@@ -77,6 +89,11 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
   const [autoApprove, setAutoApprove] = useState(() => localStorage.getItem('yoloMode') === 'true');
   const [pushRemote, setPushRemote] = useState(true);
 
+  // Port assignment state
+  const [assignPorts, setAssignPorts] = useState(false);
+  const [frontendPort, setFrontendPort] = useState(5173);
+  const [backendPort, setBackendPort] = useState(8080);
+
   // Branch selector state
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [branchLoading, setBranchLoading] = useState(false);
@@ -96,6 +113,21 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-calculate next available ports when toggle is enabled
+  useEffect(() => {
+    if (!assignPorts || !projectId) return;
+    window.electronAPI.getUsedPorts(projectId).then((resp) => {
+      if (!resp.success || !resp.data) return;
+      const { frontend, backend } = resp.data;
+      let nextFrontend = 5173;
+      while (frontend.includes(nextFrontend)) nextFrontend++;
+      let nextBackend = 8080;
+      while (backend.includes(nextBackend)) nextBackend++;
+      setFrontendPort(nextFrontend);
+      setBackendPort(nextBackend);
+    });
+  }, [assignPorts, projectId]);
 
   // Check gh and ADO availability on mount
   useEffect(() => {
@@ -198,6 +230,8 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
         baseRef,
         pushRemote: useWorktree ? pushRemote : undefined,
         linkedItems: allLinkedItems.length > 0 ? allLinkedItems : undefined,
+        frontendPort: useWorktree && assignPorts ? frontendPort : undefined,
+        backendPort: useWorktree && assignPorts ? backendPort : undefined,
       });
       onClose();
     }
@@ -442,6 +476,51 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
                 <p className="ml-[44px] mt-1 text-[11px] text-muted-foreground/40 font-mono truncate">
                   origin/{slugify(name.trim())}
                 </p>
+              )}
+            </div>
+          )}
+
+          {/* Port assignment toggle */}
+          {useWorktree && (
+            <div className="mb-4">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={assignPorts}
+                    onChange={(e) => setAssignPorts(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-8 h-[18px] rounded-full bg-accent peer-checked:bg-primary/80 transition-colors duration-200" />
+                  <div className="absolute top-[3px] left-[3px] w-3 h-3 rounded-full bg-muted-foreground/40 peer-checked:bg-primary-foreground peer-checked:translate-x-[14px] transition-all duration-200" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Network size={13} className="text-muted-foreground/40" strokeWidth={1.8} />
+                  <span className="text-[13px] text-foreground/80">Assign dev ports</span>
+                  <span className="text-[11px] text-muted-foreground/40">avoid conflicts</span>
+                </div>
+              </label>
+              {assignPorts && (
+                <div className="ml-[44px] mt-2 flex items-center gap-3">
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[11px] text-muted-foreground/50">Frontend</label>
+                    <input
+                      type="number"
+                      value={frontendPort}
+                      onChange={(e) => setFrontendPort(Number(e.target.value))}
+                      className="w-[72px] px-2 py-1 rounded-md bg-background border border-input/60 text-foreground text-[12px] font-mono focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring/50"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[11px] text-muted-foreground/50">Backend</label>
+                    <input
+                      type="number"
+                      value={backendPort}
+                      onChange={(e) => setBackendPort(Number(e.target.value))}
+                      className="w-[72px] px-2 py-1 rounded-md bg-background border border-input/60 text-foreground text-[12px] font-mono focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring/50"
+                    />
+                  </div>
+                </div>
               )}
             </div>
           )}

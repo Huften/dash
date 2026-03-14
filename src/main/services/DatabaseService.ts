@@ -1,4 +1,4 @@
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, and, isNull } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { initDb, getDb } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -96,6 +96,8 @@ export class DatabaseService {
         autoApprove: data.autoApprove ?? false,
         branchCreatedByDash: data.branchCreatedByDash ?? false,
         linkedItems: linkedItemsJson,
+        frontendPort: data.frontendPort ?? null,
+        backendPort: data.backendPort ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -127,6 +129,22 @@ export class DatabaseService {
       .set({ archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
       .where(eq(tasks.id, id))
       .run();
+  }
+
+  static getUsedPorts(projectId: string): { frontend: number[]; backend: number[] } {
+    const db = getDb();
+    const rows = db
+      .select({ frontendPort: tasks.frontendPort, backendPort: tasks.backendPort })
+      .from(tasks)
+      .where(and(eq(tasks.projectId, projectId), isNull(tasks.archivedAt)))
+      .all();
+    const frontend: number[] = [];
+    const backend: number[] = [];
+    for (const row of rows) {
+      if (row.frontendPort != null) frontend.push(row.frontendPort);
+      if (row.backendPort != null) backend.push(row.backendPort);
+    }
+    return { frontend, backend };
   }
 
   static restoreTask(id: string): void {
@@ -210,6 +228,8 @@ export class DatabaseService {
       autoApprove: row.autoApprove ?? false,
       branchCreatedByDash: row.branchCreatedByDash ?? false,
       linkedItems,
+      frontendPort: row.frontendPort ?? null,
+      backendPort: row.backendPort ?? null,
       archivedAt: row.archivedAt,
       createdAt: row.createdAt ?? '',
       updatedAt: row.updatedAt ?? '',
