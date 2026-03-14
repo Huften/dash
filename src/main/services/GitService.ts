@@ -386,6 +386,76 @@ export class GitService {
     await git(cwd, ['push']);
   }
 
+  /**
+   * Merge a source branch into a target branch from the project root.
+   * Fetches target, checks out, merges with --no-ff, pushes, then returns to previous branch.
+   */
+  static async mergeInto(
+    projectPath: string,
+    sourceBranch: string,
+    targetBranch: string,
+  ): Promise<void> {
+    // Run from project root to avoid worktree checkout issues
+    const run = (args: string[]) =>
+      execFileAsync('git', args, { cwd: projectPath, timeout: 30000 });
+
+    try {
+      // Ensure target is up-to-date
+      await run(['fetch', 'origin', targetBranch]);
+
+      // Checkout target branch
+      await run(['checkout', targetBranch]);
+
+      // Pull latest to be safe
+      try {
+        await run(['pull', '--ff-only']);
+      } catch {
+        // May fail if no upstream; continue
+      }
+
+      // Merge source into target with no-ff
+      await run([
+        'merge',
+        sourceBranch,
+        '--no-ff',
+        '-m',
+        `Merge branch '${sourceBranch}' into ${targetBranch}`,
+      ]);
+
+      // Push the merge
+      await run(['push']);
+
+      // Return to previous branch
+      await run(['checkout', '-']);
+    } catch (err: unknown) {
+      // Attempt to restore state on failure
+      try {
+        await run(['merge', '--abort']);
+      } catch {
+        // May not be in merge state
+      }
+      try {
+        await run(['checkout', '-']);
+      } catch {
+        // Best effort
+      }
+
+      const msg = String((err as { stderr?: string }).stderr || err);
+      const fatalMatch = msg.match(/fatal:\s*(.+)/i);
+      const conflictMatch = msg.match(/CONFLICT/i);
+      if (conflictMatch) {
+        throw new Error(
+          'Merge conflicts detected. Please resolve conflicts manually or use a pull request.',
+        );
+      }
+      throw new Error(
+        fatalMatch
+          ? `Merge failed: ${fatalMatch[1].trim()}`
+          : `Merge failed: ${msg.split('\n')[0].trim()}`,
+      );
+    }
+  }
+
   // ── Commit Graph ────────────────────────────────────────
 
   static async getCommitGraph(cwd: string, limit = 150, skip = 0): Promise<CommitGraphData> {

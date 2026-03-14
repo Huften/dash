@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteTask: (id: string) => ipcRenderer.invoke('db:deleteTask', id),
   archiveTask: (id: string) => ipcRenderer.invoke('db:archiveTask', id),
   restoreTask: (id: string) => ipcRenderer.invoke('db:restoreTask', id),
+  getUsedPorts: (projectId: string) => ipcRenderer.invoke('db:getUsedPorts', projectId),
 
   // Database - Conversations
   getConversations: (taskId: string) => ipcRenderer.invoke('db:getConversations', taskId),
@@ -158,6 +159,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Git detection
   detectGit: (folderPath: string) => ipcRenderer.invoke('app:detectGit', folderPath),
   detectClaude: () => ipcRenderer.invoke('app:detectClaude'),
+  getClaudeCliPath: () => ipcRenderer.invoke('app:getClaudeCliPath'),
+  setClaudeCliPath: (customPath: string | null) =>
+    ipcRenderer.invoke('app:setClaudeCliPath', customPath),
+  browseClaudeCli: () => ipcRenderer.invoke('app:browseClaudeCli'),
 
   // Git operations
   gitClone: (args: { url: string }) => ipcRenderer.invoke('git:clone', args),
@@ -179,6 +184,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Branch listing
   gitListBranches: (cwd: string) => ipcRenderer.invoke('git:listBranches', cwd),
+
+  // Merge
+  gitMergeInto: (args: { projectPath: string; sourceBranch: string; targetBranch: string }) =>
+    ipcRenderer.invoke('git:mergeInto', args),
 
   // Commit graph
   gitGetCommitGraph: (args: { cwd: string; limit?: number; skip?: number }) =>

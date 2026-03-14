@@ -24,7 +24,8 @@ async function detectEditor(): Promise<string> {
   // Probe for known editors
   for (const editor of ['cursor', 'code', 'zed']) {
     try {
-      await execFileAsync('which', [editor]);
+      const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+      await execFileAsync(whichCmd, [editor]);
       cachedEditor = editor;
       return editor;
     } catch {
@@ -163,6 +164,53 @@ export function registerAppIpc(): void {
         success: true,
         data: { installed: false, version: null, path: null },
       };
+    }
+  });
+
+  ipcMain.handle('app:getClaudeCliPath', async () => {
+    try {
+      const { getCustomClaudePath } = await import('../main');
+      return { success: true, data: getCustomClaudePath() };
+    } catch {
+      return { success: true, data: null };
+    }
+  });
+
+  ipcMain.handle('app:setClaudeCliPath', async (_event, customPath: string | null) => {
+    try {
+      const { saveCustomClaudePath, detectClaudeCli } = await import('../main');
+      saveCustomClaudePath(customPath);
+      // Re-detect so claudeCliCache updates immediately
+      await detectClaudeCli();
+      // Clear cached path in ptyManager so it picks up the new one
+      const { clearCachedClaudePath } = await import('../services/ptyManager');
+      clearCachedClaudePath();
+      const { claudeCliCache } = await import('../main');
+      return { success: true, data: claudeCliCache };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('app:browseClaudeCli', async () => {
+    try {
+      const win = BrowserWindow.getFocusedWindow();
+      const result = win
+        ? await dialog.showOpenDialog(win, {
+            properties: ['openFile'],
+            title: 'Select Claude CLI executable',
+          })
+        : await dialog.showOpenDialog({
+            properties: ['openFile'],
+            title: 'Select Claude CLI executable',
+          });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: true, data: null };
+      }
+      return { success: true, data: result.filePaths[0] };
+    } catch (error) {
+      return { success: false, error: String(error) };
     }
   });
 

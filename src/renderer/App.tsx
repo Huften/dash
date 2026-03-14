@@ -14,6 +14,7 @@ import { CommitGraphModal } from './components/CommitGraph/CommitGraphModal';
 import { TaskModal } from './components/TaskModal';
 import { AddProjectModal } from './components/AddProjectModal';
 import { DeleteTaskModal } from './components/DeleteTaskModal';
+import { MergeTaskModal } from './components/MergeTaskModal';
 import { RemoteControlModal } from './components/RemoteControlModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ProjectSettingsModal } from './components/ProjectSettingsModal';
@@ -35,7 +36,7 @@ import { formatTaskContextPrompt } from '../shared/taskContext';
 import { loadKeybindings, saveKeybindings, matchesBinding } from './keybindings';
 import type { KeyBindingMap } from './keybindings';
 import { sessionRegistry } from './terminal/SessionRegistry';
-import { playNotificationSound, playPeonSound } from './sounds';
+import { playNotificationSound, playThemeSound, isThemeSound } from './sounds';
 import type { NotificationSound } from './sounds';
 
 const GIT_POLL_INTERVAL = 5000;
@@ -57,6 +58,7 @@ export function App() {
     error: null,
   });
   const [deleteTaskTarget, setDeleteTaskTarget] = useState<Task | null>(null);
+  const [mergeTask, setMergeTask] = useState<Task | null>(null);
   const [projectSettingsTarget, setProjectSettingsTarget] = useState<Project | null>(null);
   const [adoSetup, setAdoSetup] = useState<{
     projectId: string;
@@ -188,11 +190,11 @@ export function App() {
     const hasBeenIdle = new Set<string>();
 
     const unsubscribe = window.electronAPI.onPtyActivity((newActivity) => {
-      // Peon mode: detect idle→busy transitions (user submits query)
-      if (notificationSoundRef.current === 'peon') {
+      // Theme sounds: detect idle→busy transitions (user submits query)
+      if (isThemeSound(notificationSoundRef.current)) {
         for (const [id, state] of Object.entries(newActivity)) {
           if (prevActivity[id] === 'idle' && state === 'busy' && hasBeenIdle.has(id)) {
-            playPeonSound('yes');
+            playThemeSound(notificationSoundRef.current, 'yes');
             break;
           }
         }
@@ -399,6 +401,9 @@ export function App() {
         if (remoteControlModalPtyId) {
           e.preventDefault();
           setRemoteControlModalPtyId(null);
+        } else if (mergeTask) {
+          e.preventDefault();
+          setMergeTask(null);
         } else if (deleteTaskTarget) {
           e.preventDefault();
           setDeleteTaskTarget(null);
@@ -460,6 +465,7 @@ export function App() {
     projects,
     tasksByProject,
     remoteControlModalPtyId,
+    mergeTask,
     deleteTaskTarget,
     showDiff,
     showCommitGraph,
@@ -650,7 +656,16 @@ export function App() {
   }
 
   async function handleCreateTask(options: CreateTaskOptions) {
-    const { name, useWorktree, autoApprove, baseRef, pushRemote, linkedItems } = options;
+    const {
+      name,
+      useWorktree,
+      autoApprove,
+      baseRef,
+      pushRemote,
+      linkedItems,
+      frontendPort,
+      backendPort,
+    } = options;
 
     const targetProjectId = taskModalProjectId || activeProjectId;
     const targetProject = projects.find((p) => p.id === targetProjectId);
@@ -702,6 +717,8 @@ export function App() {
       autoApprove,
       branchCreatedByDash: useWorktree && !!worktreeInfo,
       linkedItems: linkedItems ?? null,
+      frontendPort: frontendPort ?? null,
+      backendPort: backendPort ?? null,
     });
 
     if (saveResp.success && saveResp.data) {
@@ -731,8 +748,8 @@ export function App() {
       setActiveProjectId(targetProject.id);
       setActiveTaskId(taskId);
 
-      if (notificationSoundRef.current === 'peon') {
-        playPeonSound('what');
+      if (isThemeSound(notificationSoundRef.current)) {
+        playThemeSound(notificationSoundRef.current, 'what');
       }
 
       window.electronAPI.worktreeEnsureReserve({
@@ -1020,6 +1037,7 @@ export function App() {
               taskActivity={taskActivity}
               remoteControlStates={remoteControlStates}
               onSelectTask={setActiveTaskId}
+              onOpenMerge={(task) => setMergeTask(task)}
               onEnableRemoteControl={(taskId) => setRemoteControlModalPtyId(taskId)}
             />
           </ShellDrawerWrapper>
@@ -1198,6 +1216,18 @@ export function App() {
           task={deleteTaskTarget}
           onClose={() => setDeleteTaskTarget(null)}
           onConfirm={handleDeleteTaskConfirm}
+        />
+      )}
+
+      {mergeTask && activeProject && (
+        <MergeTaskModal
+          task={mergeTask}
+          project={activeProject}
+          onClose={() => setMergeTask(null)}
+          onMerged={() => {
+            toast.success(`Merged '${mergeTask.branch}' successfully`);
+            setMergeTask(null);
+          }}
         />
       )}
 

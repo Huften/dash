@@ -47,6 +47,9 @@ export interface ElectronAPI {
   deleteTask: (id: string) => Promise<IpcResponse<void>>;
   archiveTask: (id: string) => Promise<IpcResponse<void>>;
   restoreTask: (id: string) => Promise<IpcResponse<void>>;
+  getUsedPorts: (
+    projectId: string,
+  ) => Promise<IpcResponse<{ frontend: number[]; backend: number[] }>>;
 
   // Database - Conversations
   getConversations: (taskId: string) => Promise<IpcResponse<Conversation[]>>;
@@ -193,6 +196,11 @@ export interface ElectronAPI {
   detectClaude: () => Promise<
     IpcResponse<{ installed: boolean; version: string | null; path: string | null }>
   >;
+  getClaudeCliPath: () => Promise<IpcResponse<string | null>>;
+  setClaudeCliPath: (
+    customPath: string | null,
+  ) => Promise<IpcResponse<{ installed: boolean; version: string | null; path: string | null }>>;
+  browseClaudeCli: () => Promise<IpcResponse<string | null>>;
 
   // Git operations
   gitClone: (args: { url: string }) => Promise<IpcResponse<{ path: string; name: string }>>;
@@ -226,6 +234,13 @@ export interface ElectronAPI {
 
   // Branch listing
   gitListBranches: (cwd: string) => Promise<IpcResponse<BranchInfo[]>>;
+
+  // Merge
+  gitMergeInto: (args: {
+    projectPath: string;
+    sourceBranch: string;
+    targetBranch: string;
+  }) => Promise<IpcResponse<void>>;
 
   // File watcher
   gitWatch: (args: { id: string; cwd: string }) => Promise<IpcResponse<void>>;

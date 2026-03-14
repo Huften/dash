@@ -1,6 +1,6 @@
 import React from 'react';
 import { TerminalPane } from './TerminalPane';
-import { Terminal, FolderOpen, GitBranch, Globe } from 'lucide-react';
+import { Terminal, FolderOpen, GitBranch, GitMerge, Globe, Network } from 'lucide-react';
 import type { Project, Task, RemoteControlState } from '../../shared/types';
 import { linkedItemUrl } from '../../shared/urls';
 
@@ -13,6 +13,7 @@ interface MainContentProps {
   taskActivity?: Record<string, 'busy' | 'idle' | 'waiting'>;
   remoteControlStates?: Record<string, RemoteControlState>;
   onSelectTask?: (id: string) => void;
+  onOpenMerge?: (task: Task) => void;
   onEnableRemoteControl?: (taskId: string) => void;
 }
 
@@ -25,6 +26,7 @@ export function MainContent({
   taskActivity = {},
   remoteControlStates = {},
   onSelectTask,
+  onOpenMerge,
   onEnableRemoteControl,
 }: MainContentProps) {
   if (!activeProject) {
@@ -125,7 +127,29 @@ export function MainContent({
           <div className="flex items-center gap-1.5 text-foreground/60">
             <GitBranch size={11} strokeWidth={2} />
             <span className="text-[11px] font-mono">{activeTask.branch}</span>
+            {activeTask.useWorktree && (
+              <button
+                onClick={() => onOpenMerge?.(activeTask)}
+                className="p-0.5 rounded hover:bg-accent/60 text-muted-foreground/50 hover:text-foreground transition-colors"
+                title="Merge branch"
+              >
+                <GitMerge size={12} strokeWidth={1.8} />
+              </button>
+            )}
           </div>
+          {(activeTask.frontendPort || activeTask.backendPort) && (
+            <div className="flex items-center gap-1.5 text-muted-foreground/60">
+              <Network size={11} strokeWidth={1.8} />
+              <span className="text-[11px] font-mono">
+                {[
+                  activeTask.frontendPort && `fe:${activeTask.frontendPort}`,
+                  activeTask.backendPort && `be:${activeTask.backendPort}`,
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              </span>
+            </div>
+          )}
           {activeTask.linkedItems && activeTask.linkedItems.length > 0 ? (
             <div className="flex items-center gap-1">
               {activeTask.linkedItems.map((item) => {

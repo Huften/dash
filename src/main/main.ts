@@ -119,6 +119,7 @@ app.whenReady().then(async () => {
   }, 2000);
 
   // Detect Claude CLI (cache for settings UI)
+  loadCustomClaudePath();
   detectClaudeCli();
 });
 
@@ -129,10 +130,65 @@ export let claudeCliCache: { installed: boolean; version: string | null; path: s
   path: null,
 };
 
-async function detectClaudeCli(): Promise<void> {
+// Persisted custom Claude CLI path (stored in app data dir)
+let customClaudeCliPath: string | null = null;
+
+function getCustomClaudePathFile(): string {
+  return path.join(app.getPath('userData'), 'claude-cli-path.json');
+}
+
+export function loadCustomClaudePath(): string | null {
   try {
-    const { stdout } = await execFileAsync('which', ['claude']);
-    const claudePath = stdout.trim();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs');
+    const data = JSON.parse(fs.readFileSync(getCustomClaudePathFile(), 'utf-8'));
+    customClaudeCliPath = data.path || null;
+    return customClaudeCliPath;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCustomClaudePath(p: string | null): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('fs');
+  customClaudeCliPath = p || null;
+  if (p) {
+    fs.writeFileSync(getCustomClaudePathFile(), JSON.stringify({ path: p }));
+  } else {
+    try {
+      fs.unlinkSync(getCustomClaudePathFile());
+    } catch {
+      // Ignore
+    }
+  }
+}
+
+export function getCustomClaudePath(): string | null {
+  return customClaudeCliPath;
+}
+
+export async function detectClaudeCli(): Promise<void> {
+  // 1. Check custom path first
+  if (customClaudeCliPath) {
+    try {
+      const { stdout: versionOut } = await execFileAsync(customClaudeCliPath, ['--version']);
+      claudeCliCache = {
+        installed: true,
+        version: versionOut.trim(),
+        path: customClaudeCliPath,
+      };
+      return;
+    } catch {
+      // Custom path invalid, fall through to auto-detect
+    }
+  }
+
+  // 2. Auto-detect via which/where
+  try {
+    const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+    const { stdout } = await execFileAsync(whichCmd, ['claude']);
+    const claudePath = stdout.trim().split(/\r?\n/)[0]; // `where` may return multiple lines
     const { stdout: versionOut } = await execFileAsync(claudePath, ['--version']);
     claudeCliCache = {
       installed: true,

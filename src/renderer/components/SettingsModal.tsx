@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Check, AlertCircle, Sun, Moon, RotateCcw, Download } from 'lucide-react';
+import { X, Check, AlertCircle, Sun, Moon, RotateCcw, Download, FolderOpen } from 'lucide-react';
 import type { KeyBindingMap, KeyBinding } from '../keybindings';
 import {
   getBindingKeys,
@@ -143,6 +143,7 @@ export function SettingsModal({
   } | null>(null);
   const [appVersion, setAppVersion] = useState('');
   const [claudeDefaultAttribution, setClaudeDefaultAttribution] = useState<string | null>(null);
+  const [customClaudePath, setCustomClaudePath] = useState<string>('');
   const [updateStatus, setUpdateStatus] = useState<
     'idle' | 'checking' | 'available' | 'downloading' | 'ready'
   >('idle');
@@ -176,6 +177,9 @@ export function SettingsModal({
       if (resp.success && resp.data != null) {
         setClaudeDefaultAttribution(resp.data);
       }
+    });
+    window.electronAPI.getClaudeCliPath().then((resp) => {
+      if (resp.success && resp.data) setCustomClaudePath(resp.data);
     });
   }, [activeProjectPath]);
 
@@ -476,7 +480,7 @@ export function SettingsModal({
                       />
                     )}
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     {claudeInfo?.installed ? (
                       <div className="space-y-0.5">
                         <p className="text-[11px] text-foreground/60 font-mono">
@@ -496,6 +500,53 @@ export function SettingsModal({
                     )}
                   </div>
                 </div>
+                <div className="flex items-center gap-2 mt-3">
+                  <input
+                    type="text"
+                    value={customClaudePath}
+                    onChange={(e) => setCustomClaudePath(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const value = customClaudePath.trim() || null;
+                        window.electronAPI.setClaudeCliPath(value).then((resp) => {
+                          if (resp.success && resp.data) setClaudeInfo(resp.data);
+                        });
+                      }
+                    }}
+                    placeholder="Custom CLI path (leave empty for auto-detect)"
+                    className="flex-1 px-3 py-2 rounded-lg text-[12px] font-mono border border-border/60 bg-transparent text-foreground placeholder:text-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40"
+                  />
+                  <button
+                    onClick={() => {
+                      window.electronAPI.browseClaudeCli().then((resp) => {
+                        if (resp.success && resp.data) {
+                          setCustomClaudePath(resp.data);
+                          window.electronAPI.setClaudeCliPath(resp.data).then((r) => {
+                            if (r.success && r.data) setClaudeInfo(r.data);
+                          });
+                        }
+                      });
+                    }}
+                    className="p-2 rounded-lg border border-border/60 text-foreground/60 hover:bg-accent/40 hover:text-foreground transition-all duration-150"
+                    title="Browse for Claude CLI"
+                  >
+                    <FolderOpen size={14} strokeWidth={1.8} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      const value = customClaudePath.trim() || null;
+                      window.electronAPI.setClaudeCliPath(value).then((resp) => {
+                        if (resp.success && resp.data) setClaudeInfo(resp.data);
+                      });
+                    }}
+                    className="px-3 py-2 rounded-lg text-[12px] font-medium border border-border/60 text-foreground/60 hover:bg-accent/40 hover:text-foreground transition-all duration-150"
+                  >
+                    Apply
+                  </button>
+                </div>
+                <p className="text-[10px] text-foreground/80 mt-2">
+                  Set a custom path if auto-detection fails. Press Enter or click Apply to save.
+                </p>
               </div>
 
               {/* Updates */}
