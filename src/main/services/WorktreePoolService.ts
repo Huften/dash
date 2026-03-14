@@ -116,6 +116,9 @@ export class WorktreePoolService {
         cwd: reserve.projectPath,
       });
 
+      // Copy preserved files (.env, node_modules, etc) from project root
+      await worktreeService.preserveFiles(reserve.projectPath, newPath);
+
       // If different base ref needed, reset
       const targetBaseRef = baseRef || reserve.baseRef;
       if (targetBaseRef && targetBaseRef !== 'HEAD') {
@@ -212,6 +215,8 @@ export class WorktreePoolService {
         for (const entry of entries) {
           if (entry.startsWith(`${RESERVE_PREFIX}-`)) {
             const reservePath = path.join(worktreesDir, entry);
+            // Extract hash from directory name (_reserve-{hash}) to delete branch (_reserve/{hash})
+            const hash = entry.slice(`${RESERVE_PREFIX}-`.length);
             try {
               await execFileAsync('git', ['worktree', 'remove', '--force', reservePath], {
                 cwd: project.path,
@@ -224,12 +229,43 @@ export class WorktreePoolService {
                 // Give up
               }
             }
+            // Delete the corresponding reserve branch
+            try {
+              await execFileAsync('git', ['branch', '-D', `${RESERVE_PREFIX}/${hash}`], {
+                cwd: project.path,
+              });
+            } catch {
+              // Branch may not exist
+            }
           }
         }
 
-        // Prune
+        // Prune worktree metadata
         try {
           await execFileAsync('git', ['worktree', 'prune'], { cwd: project.path });
+        } catch {
+          // Best effort
+        }
+
+        // Sweep any remaining orphan _reserve/* branches (e.g. from crashes where dir was already gone)
+        try {
+          const { stdout } = await execFileAsync(
+            'git',
+            ['branch', '--list', `${RESERVE_PREFIX}/*`],
+            { cwd: project.path },
+          );
+          for (const line of stdout.split('\n').filter(Boolean)) {
+            const branchName = line.trim();
+            if (branchName) {
+              try {
+                await execFileAsync('git', ['branch', '-D', branchName], {
+                  cwd: project.path,
+                });
+              } catch {
+                // Best effort
+              }
+            }
+          }
         } catch {
           // Best effort
         }

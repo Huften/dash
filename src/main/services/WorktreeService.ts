@@ -18,6 +18,9 @@ const PRESERVE_PATTERNS = [
   'docker-compose.override.yml',
 ];
 
+/** Directories to link (junction on Windows, symlink on Unix) into new worktrees. */
+const PRESERVE_DIRS = ['node_modules'];
+
 export class WorktreeService {
   /**
    * Create a git worktree for a task.
@@ -187,7 +190,7 @@ export class WorktreeService {
   /**
    * Copy preserved files (.env, etc) from source to target.
    */
-  private async preserveFiles(from: string, to: string): Promise<void> {
+  async preserveFiles(from: string, to: string): Promise<void> {
     for (const pattern of PRESERVE_PATTERNS) {
       // Simple glob: if no wildcard, just check exact file
       if (!pattern.includes('*')) {
@@ -221,6 +224,20 @@ export class WorktreeService {
         } catch {
           // Skip
         }
+      }
+    }
+
+    // Link directories (junction on Windows, symlink on Unix) — avoids reinstalling
+    for (const dir of PRESERVE_DIRS) {
+      const srcDir = path.join(from, dir);
+      const destDir = path.join(to, dir);
+      try {
+        if (fs.existsSync(srcDir) && !fs.existsSync(destDir)) {
+          const srcReal = fs.realpathSync(srcDir);
+          fs.symlinkSync(srcReal, destDir, process.platform === 'win32' ? 'junction' : 'dir');
+        }
+      } catch {
+        // Skip — may fail if source is missing or permissions issue
       }
     }
   }
