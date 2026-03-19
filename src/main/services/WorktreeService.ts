@@ -30,42 +30,60 @@ export class WorktreeService {
     taskName: string,
     options: {
       baseRef?: string;
+      existingBranch?: string;
       projectId: string;
       linkedIssueNumbers?: number[];
       pushRemote?: boolean;
+      linkedProjectPath?: string;
+      linkedProjectId?: string;
+      linkedExistingBranch?: string;
+      linkedBaseRef?: string;
+      linkedPushRemote?: boolean;
     },
   ): Promise<WorktreeInfo> {
+    // Multi-repo: delegate to specialized method
+    if (options.linkedProjectPath) {
+      return this.createMultiRepoWorktree(projectPath, taskName, options);
+    }
+
     const slug = this.slugify(taskName);
     const hash = this.generateShortHash();
-    const branchName = `${slug}-${hash}`;
 
-    const baseRef = await this.resolveBaseRef(projectPath, options.baseRef);
     const worktreesDir = this.getWorktreesDir(projectPath);
-
-    // Ensure worktrees directory exists
     if (!fs.existsSync(worktreesDir)) {
       fs.mkdirSync(worktreesDir, { recursive: true });
     }
 
+    let branchName: string;
     const worktreePath = path.join(worktreesDir, `${slug}-${hash}`);
 
-    // Create worktree
-    await execFileAsync('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
-      cwd: projectPath,
-    });
+    if (options.existingBranch) {
+      // Use existing branch — no -b flag, --force allows branch already checked out elsewhere
+      branchName = options.existingBranch;
+      await execFileAsync('git', ['worktree', 'add', '--force', worktreePath, branchName], {
+        cwd: projectPath,
+      });
+    } else {
+      // Create new branch
+      branchName = `${slug}-${hash}`;
+      const baseRef = await this.resolveBaseRef(projectPath, options.baseRef);
+      await execFileAsync('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
+        cwd: projectPath,
+      });
+    }
 
     // Copy preserved files
     await this.preserveFiles(projectPath, worktreePath);
 
-    // Push to remote if requested (default: true for backwards compat)
-    const pushRemote = options.pushRemote ?? true;
-    if (pushRemote) {
-      // Link branch to issues before pushing (createLinkedBranch needs the branch to not exist)
-      if (options.linkedIssueNumbers && options.linkedIssueNumbers.length > 0) {
-        this.linkAndPushAsync(worktreePath, branchName, options.linkedIssueNumbers);
-      } else {
-        // Push branch with upstream tracking (async, non-blocking)
-        this.pushBranchAsync(worktreePath, branchName);
+    // Push to remote if requested (default: true for backwards compat, skip for existing branch)
+    if (!options.existingBranch) {
+      const pushRemote = options.pushRemote ?? true;
+      if (pushRemote) {
+        if (options.linkedIssueNumbers && options.linkedIssueNumbers.length > 0) {
+          this.linkAndPushAsync(worktreePath, branchName, options.linkedIssueNumbers);
+        } else {
+          this.pushBranchAsync(worktreePath, branchName);
+        }
       }
     }
 
@@ -82,6 +100,112 @@ export class WorktreeService {
   }
 
   /**
+   * Create a multi-repo worktree with primary and linked repos as subdirectories.
+   */
+  private async createMultiRepoWorktree(
+    projectPath: string,
+    taskName: string,
+    options: {
+      baseRef?: string;
+      existingBranch?: string;
+      projectId: string;
+      linkedIssueNumbers?: number[];
+      pushRemote?: boolean;
+      linkedProjectPath?: string;
+      linkedProjectId?: string;
+      linkedExistingBranch?: string;
+      linkedBaseRef?: string;
+      linkedPushRemote?: boolean;
+    },
+  ): Promise<WorktreeInfo> {
+    const slug = this.slugify(taskName);
+    const hash = this.generateShortHash();
+    const worktreesDir = this.getWorktreesDir(projectPath);
+
+    if (!fs.existsSync(worktreesDir)) {
+      fs.mkdirSync(worktreesDir, { recursive: true });
+    }
+
+    // Parent dir containing both repos
+    const parentDir = path.join(worktreesDir, `${slug}-${hash}`);
+    fs.mkdirSync(parentDir, { recursive: true });
+
+    const primaryPath = path.join(parentDir, 'backend');
+    const linkedPath = path.join(parentDir, 'frontend');
+    const linkedProjectPath = options.linkedProjectPath!;
+
+    // Create primary worktree
+    let primaryBranch: string;
+    if (options.existingBranch) {
+      primaryBranch = options.existingBranch;
+      await execFileAsync('git', ['worktree', 'add', '--force', primaryPath, primaryBranch], {
+        cwd: projectPath,
+      });
+    } else {
+      primaryBranch = `${slug}-${hash}`;
+      const baseRef = await this.resolveBaseRef(projectPath, options.baseRef);
+      await execFileAsync('git', ['worktree', 'add', '-b', primaryBranch, primaryPath, baseRef], {
+        cwd: projectPath,
+      });
+    }
+
+    // Create linked worktree
+    let linkedBranch: string;
+    let linkedBranchCreatedByDash: boolean;
+    if (options.linkedExistingBranch) {
+      linkedBranch = options.linkedExistingBranch;
+      linkedBranchCreatedByDash = false;
+      await execFileAsync('git', ['worktree', 'add', '--force', linkedPath, linkedBranch], {
+        cwd: linkedProjectPath,
+      });
+    } else {
+      linkedBranch = `${slug}-${hash}`;
+      linkedBranchCreatedByDash = true;
+      const linkedBaseRef = await this.resolveBaseRef(linkedProjectPath, options.linkedBaseRef);
+      await execFileAsync(
+        'git',
+        ['worktree', 'add', '-b', linkedBranch, linkedPath, linkedBaseRef],
+        { cwd: linkedProjectPath },
+      );
+    }
+
+    // Preserve files for both repos
+    await this.preserveFiles(projectPath, primaryPath);
+    await this.preserveFiles(linkedProjectPath, linkedPath);
+
+    // Push branches if new
+    if (!options.existingBranch) {
+      const pushRemote = options.pushRemote ?? true;
+      if (pushRemote) {
+        if (options.linkedIssueNumbers && options.linkedIssueNumbers.length > 0) {
+          this.linkAndPushAsync(primaryPath, primaryBranch, options.linkedIssueNumbers);
+        } else {
+          this.pushBranchAsync(primaryPath, primaryBranch);
+        }
+      }
+    }
+    if (!options.linkedExistingBranch) {
+      const linkedPush = options.linkedPushRemote ?? true;
+      if (linkedPush) {
+        this.pushBranchAsync(linkedPath, linkedBranch);
+      }
+    }
+
+    const id = this.stableIdFromPath(parentDir);
+    return {
+      id,
+      name: taskName,
+      branch: primaryBranch,
+      path: parentDir,
+      projectId: options.projectId,
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      linkedBranch,
+      linkedBranchCreatedByDash,
+    };
+  }
+
+  /**
    * Remove a worktree and clean up branches.
    */
   async removeWorktree(
@@ -94,6 +218,8 @@ export class WorktreeService {
     const deleteLocalBranch = options?.deleteLocalBranch ?? true;
     const deleteRemoteBranch = options?.deleteRemoteBranch ?? true;
 
+    const isMultiRepo = !!(options?.linkedProjectPath && options?.linkedBranch);
+
     // Safety: never remove the project directory itself
     const normalizedProject = path.resolve(projectPath);
     const normalizedWorktree = path.resolve(worktreePath);
@@ -101,15 +227,59 @@ export class WorktreeService {
       throw new Error('Cannot remove project directory as worktree');
     }
 
+    // For multi-repo tasks, remove linked worktree first
+    if (isMultiRepo && deleteWorktreeDir) {
+      const linkedProjectPath = options!.linkedProjectPath!;
+      const linkedBranch = options!.linkedBranch!;
+      const linkedWorktreePath = path.join(worktreePath, 'frontend');
+
+      // Remove linked worktree
+      try {
+        await execFileAsync('git', ['worktree', 'remove', '--force', linkedWorktreePath], {
+          cwd: linkedProjectPath,
+        });
+      } catch {
+        if (fs.existsSync(linkedWorktreePath)) {
+          fs.rmSync(linkedWorktreePath, { recursive: true, force: true });
+        }
+      }
+      try {
+        await execFileAsync('git', ['worktree', 'prune'], { cwd: linkedProjectPath });
+      } catch {
+        /* best effort */
+      }
+
+      // Delete linked branches
+      if (options?.deleteLinkedLocalBranch) {
+        try {
+          await execFileAsync('git', ['branch', '-D', linkedBranch], { cwd: linkedProjectPath });
+        } catch {
+          /* may not exist */
+        }
+      }
+      if (options?.deleteLinkedRemoteBranch) {
+        execFileAsync('git', ['push', 'origin', '--delete', linkedBranch], {
+          cwd: linkedProjectPath,
+        }).catch(() => {});
+      }
+    }
+
     if (deleteWorktreeDir) {
+      // For multi-repo: primary worktree is at worktreePath/backend
+      const actualWorktreePath = isMultiRepo ? path.join(worktreePath, 'backend') : worktreePath;
+      const normalizedActual = path.resolve(actualWorktreePath);
+
       // Verify this is actually a worktree
       try {
         const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], {
           cwd: projectPath,
         });
-        if (!stdout.includes(normalizedWorktree)) {
-          // Not a registered worktree, just do filesystem cleanup
-          if (fs.existsSync(normalizedWorktree)) {
+        if (!stdout.includes(normalizedActual)) {
+          if (fs.existsSync(normalizedActual)) {
+            fs.rmSync(normalizedActual, { recursive: true, force: true });
+          }
+          // For multi-repo, also clean up parent dir
+          if (isMultiRepo && fs.existsSync(normalizedWorktree)) {
             fs.rmSync(normalizedWorktree, { recursive: true, force: true });
           }
           return;
@@ -118,15 +288,14 @@ export class WorktreeService {
         // If list fails, continue with removal anyway
       }
 
-      // Remove worktree
+      // Remove primary worktree
       try {
-        await execFileAsync('git', ['worktree', 'remove', '--force', worktreePath], {
+        await execFileAsync('git', ['worktree', 'remove', '--force', actualWorktreePath], {
           cwd: projectPath,
         });
       } catch {
-        // Force filesystem removal if git worktree remove fails
-        if (fs.existsSync(worktreePath)) {
-          fs.rmSync(worktreePath, { recursive: true, force: true });
+        if (fs.existsSync(actualWorktreePath)) {
+          fs.rmSync(actualWorktreePath, { recursive: true, force: true });
         }
       }
 
@@ -135,6 +304,11 @@ export class WorktreeService {
         await execFileAsync('git', ['worktree', 'prune'], { cwd: projectPath });
       } catch {
         // Best effort
+      }
+
+      // For multi-repo, remove the parent directory
+      if (isMultiRepo && fs.existsSync(normalizedWorktree)) {
+        fs.rmSync(normalizedWorktree, { recursive: true, force: true });
       }
     }
 

@@ -661,17 +661,27 @@ export function App() {
       useWorktree,
       autoApprove,
       baseRef,
+      existingBranch,
       pushRemote,
       linkedItems,
       frontendPort,
       backendPort,
+      linkedProjectId,
+      linkedExistingBranch,
+      linkedBaseRef,
+      linkedPushRemote,
     } = options;
 
     const targetProjectId = taskModalProjectId || activeProjectId;
     const targetProject = projects.find((p) => p.id === targetProjectId);
     if (!targetProject) return;
 
-    let worktreeInfo: { branch: string; path: string } | null = null;
+    let worktreeInfo: {
+      branch: string;
+      path: string;
+      linkedBranch?: string;
+      linkedBranchCreatedByDash?: boolean;
+    } | null = null;
 
     // Split linked items by provider
     const ghItems =
@@ -679,28 +689,53 @@ export function App() {
     const adoItems = linkedItems?.filter((i): i is LinkedAdoWorkItem => i.provider === 'ado') ?? [];
     const ghIssueNumbers = ghItems.map((i) => i.id);
 
-    if (useWorktree) {
-      const claimResp = await window.electronAPI.worktreeClaimReserve({
-        projectId: targetProject.id,
-        taskName: name,
-        baseRef,
-        linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
-        pushRemote,
-      });
+    // Resolve linked project path if multi-repo
+    const linkedProject = linkedProjectId ? projects.find((p) => p.id === linkedProjectId) : null;
 
-      if (claimResp.success && claimResp.data) {
-        worktreeInfo = { branch: claimResp.data.branch, path: claimResp.data.path };
-      } else {
+    if (useWorktree) {
+      // Skip reserve pool for existing branch or multi-repo tasks
+      const skipReserve = !!existingBranch || !!linkedProjectId;
+
+      if (!skipReserve) {
+        const claimResp = await window.electronAPI.worktreeClaimReserve({
+          projectId: targetProject.id,
+          taskName: name,
+          baseRef,
+          linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
+          pushRemote,
+        });
+
+        if (claimResp.success && claimResp.data) {
+          worktreeInfo = { branch: claimResp.data.branch, path: claimResp.data.path };
+        }
+      }
+
+      if (!worktreeInfo) {
         const createResp = await window.electronAPI.worktreeCreate({
           projectPath: targetProject.path,
           taskName: name,
           baseRef,
+          existingBranch,
           projectId: targetProject.id,
           linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
           pushRemote,
+          linkedProjectPath: linkedProject?.path,
+          linkedProjectId: linkedProject?.id,
+          linkedExistingBranch,
+          linkedBaseRef,
+          linkedPushRemote,
         });
         if (createResp.success && createResp.data) {
-          worktreeInfo = { branch: createResp.data.branch, path: createResp.data.path };
+          worktreeInfo = {
+            branch: createResp.data.branch,
+            path: createResp.data.path,
+            linkedBranch: createResp.data.linkedBranch,
+            linkedBranchCreatedByDash: createResp.data.linkedBranchCreatedByDash,
+          };
+        } else if (createResp.error) {
+          console.error('Worktree creation failed:', createResp.error);
+          toast.error(`Worktree failed: ${createResp.error}`);
+          return;
         }
       }
     }
@@ -715,10 +750,13 @@ export function App() {
       path: taskPath,
       useWorktree,
       autoApprove,
-      branchCreatedByDash: useWorktree && !!worktreeInfo,
+      branchCreatedByDash: useWorktree && !!worktreeInfo && !existingBranch,
       linkedItems: linkedItems ?? null,
       frontendPort: frontendPort ?? null,
       backendPort: backendPort ?? null,
+      linkedProjectId: linkedProject?.id ?? null,
+      linkedBranch: worktreeInfo?.linkedBranch ?? null,
+      linkedBranchCreatedByDash: worktreeInfo?.linkedBranchCreatedByDash ?? false,
     });
 
     if (saveResp.success && saveResp.data) {
@@ -788,6 +826,8 @@ export function App() {
     deleteWorktreeDir: boolean;
     deleteLocalBranch: boolean;
     deleteRemoteBranch: boolean;
+    deleteLinkedLocalBranch?: boolean;
+    deleteLinkedRemoteBranch?: boolean;
   }) {
     const task = deleteTaskTarget;
     if (!task) return;
@@ -798,11 +838,22 @@ export function App() {
       if (task.useWorktree) {
         const project = projects.find((p) => p.id === taskProjectId);
         if (project) {
+          // Resolve linked project path for multi-repo cleanup
+          const linkedProject = task.linkedProjectId
+            ? projects.find((p) => p.id === task.linkedProjectId)
+            : null;
+
           await window.electronAPI.worktreeRemove({
             projectPath: project.path,
             worktreePath: task.path,
             branch: task.branch,
-            options,
+            options: {
+              ...options,
+              linkedProjectPath: linkedProject?.path,
+              linkedBranch: task.linkedBranch ?? undefined,
+              deleteLinkedLocalBranch: options?.deleteLinkedLocalBranch,
+              deleteLinkedRemoteBranch: options?.deleteLinkedRemoteBranch,
+            },
           });
         }
       }
@@ -1122,6 +1173,7 @@ export function App() {
             projects.find((p) => p.id === (taskModalProjectId || activeProjectId))?.path ?? ''
           }
           projectId={taskModalProjectId || activeProjectId || undefined}
+          projects={projects}
           onClose={() => setShowTaskModal(false)}
           onCreate={handleCreateTask}
         />

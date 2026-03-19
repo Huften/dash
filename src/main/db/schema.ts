@@ -35,6 +35,11 @@ export const tasks = sqliteTable(
     branchCreatedByDash: integer('branch_created_by_dash', { mode: 'boolean' }).default(false),
     frontendPort: integer('frontend_port'),
     backendPort: integer('backend_port'),
+    linkedProjectId: text('linked_project_id').references(() => projects.id),
+    linkedBranch: text('linked_branch'),
+    linkedBranchCreatedByDash: integer('linked_branch_created_by_dash', {
+      mode: 'boolean',
+    }).default(false),
     archivedAt: text('archived_at'),
     createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),

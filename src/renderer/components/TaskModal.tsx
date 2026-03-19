@@ -9,24 +9,37 @@ import {
   Search,
   Upload,
   Network,
+  Link2,
 } from 'lucide-react';
 import { SearchableMultiSelect } from './SearchableMultiSelect';
-import type { BranchInfo, GithubIssue, AzureDevOpsWorkItem, LinkedItem } from '../../shared/types';
+import type {
+  BranchInfo,
+  GithubIssue,
+  AzureDevOpsWorkItem,
+  LinkedItem,
+  Project,
+} from '../../shared/types';
 
 export interface CreateTaskOptions {
   name: string;
   useWorktree: boolean;
   autoApprove: boolean;
   baseRef?: string;
+  existingBranch?: string;
   pushRemote?: boolean;
   linkedItems?: LinkedItem[];
   frontendPort?: number;
   backendPort?: number;
+  linkedProjectId?: string;
+  linkedExistingBranch?: string;
+  linkedBaseRef?: string;
+  linkedPushRemote?: boolean;
 }
 
 interface TaskModalProps {
   projectPath: string;
   projectId?: string;
+  projects?: Project[];
   onClose: () => void;
   onCreate: (options: CreateTaskOptions) => void;
 }
@@ -83,11 +96,12 @@ function AdoWorkItemRow({ item }: { item: AzureDevOpsWorkItem }) {
   );
 }
 
-export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskModalProps) {
+export function TaskModal({ projectPath, projectId, projects, onClose, onCreate }: TaskModalProps) {
   const [name, setName] = useState('');
   const [useWorktree, setUseWorktree] = useState(true);
   const [autoApprove, setAutoApprove] = useState(() => localStorage.getItem('yoloMode') === 'true');
   const [pushRemote, setPushRemote] = useState(true);
+  const [useExistingBranch, setUseExistingBranch] = useState(false);
 
   // Port assignment state
   const [assignPorts, setAssignPorts] = useState(false);
@@ -102,6 +116,16 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
   const [branchSearch, setBranchSearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
+  // Linked project (multi-repo) state
+  const [linkedProjectId, setLinkedProjectId] = useState<string | null>(null);
+  const [linkedUseExistingBranch, setLinkedUseExistingBranch] = useState(false);
+  const [linkedBranches, setLinkedBranches] = useState<BranchInfo[]>([]);
+  const [linkedBranchLoading, setLinkedBranchLoading] = useState(false);
+  const [linkedSelectedBranch, setLinkedSelectedBranch] = useState<BranchInfo | null>(null);
+  const [linkedBranchSearch, setLinkedBranchSearch] = useState('');
+  const [linkedDropdownOpen, setLinkedDropdownOpen] = useState(false);
+  const [linkedPushRemote, setLinkedPushRemote] = useState(true);
+
   // Issue/work item selection
   const [ghAvailable, setGhAvailable] = useState(false);
   const [adoAvailable, setAdoAvailable] = useState(false);
@@ -111,8 +135,13 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
   const showGithub = ghAvailable;
   const showAdo = adoAvailable;
 
+  // Available projects for linking (excluding current)
+  const linkableProjects = (projects ?? []).filter((p) => p.id !== projectId);
+
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const linkedDropdownRef = useRef<HTMLDivElement>(null);
+  const linkedSearchInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-calculate next available ports when toggle is enabled
   useEffect(() => {
@@ -160,6 +189,44 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
     if (dropdownOpen) searchInputRef.current?.focus();
   }, [dropdownOpen]);
 
+  // Focus linked search input when linked dropdown opens
+  useEffect(() => {
+    if (linkedDropdownOpen) linkedSearchInputRef.current?.focus();
+  }, [linkedDropdownOpen]);
+
+  // Close linked branch dropdown on click outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (linkedDropdownRef.current && !linkedDropdownRef.current.contains(e.target as Node)) {
+        setLinkedDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Fetch branches for linked project when selected
+  useEffect(() => {
+    if (!linkedProjectId) {
+      setLinkedBranches([]);
+      setLinkedSelectedBranch(null);
+      return;
+    }
+    const linkedProject = (projects ?? []).find((p) => p.id === linkedProjectId);
+    if (!linkedProject) return;
+
+    setLinkedBranchLoading(true);
+    window.electronAPI
+      .gitListBranches(linkedProject.path)
+      .then((resp) => {
+        if (resp.success && resp.data) {
+          setLinkedBranches(resp.data);
+          if (resp.data.length > 0) setLinkedSelectedBranch(resp.data[0]);
+        }
+      })
+      .finally(() => setLinkedBranchLoading(false));
+  }, [linkedProjectId, projects]);
+
   // Search callbacks for SearchableMultiSelect
   const searchGithubIssues = useCallback(
     (query: string) => window.electronAPI.githubSearchIssues(projectPath, query),
@@ -195,10 +262,16 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
     b.name.toLowerCase().includes(branchSearch.toLowerCase()),
   );
 
+  const filteredLinkedBranches = linkedBranches.filter((b) =>
+    b.name.toLowerCase().includes(linkedBranchSearch.toLowerCase()),
+  );
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (name.trim()) {
-      const baseRef = useWorktree ? selectedBranch?.ref : undefined;
+      const baseRef = useWorktree && !useExistingBranch ? selectedBranch?.ref : undefined;
+      const existingBranchValue =
+        useWorktree && useExistingBranch ? selectedBranch?.name : undefined;
 
       // Build unified linkedItems from both providers
       const ghItems: LinkedItem[] = selectedIssues.map((issue) => ({
@@ -223,15 +296,29 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
       }));
       const allLinkedItems: LinkedItem[] = [...ghItems, ...adoItems];
 
+      // Linked project options
+      const linkedOpts: Partial<CreateTaskOptions> = {};
+      if (linkedProjectId && useWorktree) {
+        linkedOpts.linkedProjectId = linkedProjectId;
+        if (linkedUseExistingBranch) {
+          linkedOpts.linkedExistingBranch = linkedSelectedBranch?.name;
+        } else {
+          linkedOpts.linkedBaseRef = linkedSelectedBranch?.ref;
+        }
+        linkedOpts.linkedPushRemote = linkedUseExistingBranch ? undefined : linkedPushRemote;
+      }
+
       onCreate({
         name: name.trim(),
         useWorktree,
         autoApprove,
         baseRef,
-        pushRemote: useWorktree ? pushRemote : undefined,
+        existingBranch: existingBranchValue,
+        pushRemote: useWorktree && !useExistingBranch ? pushRemote : undefined,
         linkedItems: allLinkedItems.length > 0 ? allLinkedItems : undefined,
         frontendPort: useWorktree && assignPorts ? frontendPort : undefined,
         backendPort: useWorktree && assignPorts ? backendPort : undefined,
+        ...linkedOpts,
       });
       onClose();
     }
@@ -305,11 +392,34 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
             </label>
           </div>
 
+          {/* Use existing branch toggle */}
+          {useWorktree && (
+            <div className="mb-4">
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    checked={useExistingBranch}
+                    onChange={(e) => setUseExistingBranch(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-8 h-[18px] rounded-full bg-accent peer-checked:bg-primary/80 transition-colors duration-200" />
+                  <div className="absolute top-[3px] left-[3px] w-3 h-3 rounded-full bg-muted-foreground/40 peer-checked:bg-primary-foreground peer-checked:translate-x-[14px] transition-all duration-200" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <GitBranch size={13} className="text-muted-foreground/40" strokeWidth={1.8} />
+                  <span className="text-[13px] text-foreground/80">Use existing branch</span>
+                  <span className="text-[11px] text-muted-foreground/40">checkout, no fork</span>
+                </div>
+              </label>
+            </div>
+          )}
+
           {/* Branch selector */}
           {useWorktree && (
             <div className="mb-4" ref={dropdownRef}>
               <label className="block text-[12px] font-medium text-muted-foreground/70 mb-2">
-                Base branch
+                {useExistingBranch ? 'Existing branch (checkout)' : 'Base branch (fork from)'}
               </label>
 
               {branchError ? (
@@ -454,7 +564,7 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
           )}
 
           {/* Push remote branch toggle */}
-          {useWorktree && (
+          {useWorktree && !useExistingBranch && (
             <div className="mb-4">
               <label className="flex items-center gap-3 cursor-pointer group">
                 <div className="relative">
@@ -476,6 +586,161 @@ export function TaskModal({ projectPath, projectId, onClose, onCreate }: TaskMod
                 <p className="ml-[44px] mt-1 text-[11px] text-muted-foreground/40 font-mono truncate">
                   origin/{slugify(name.trim())}
                 </p>
+              )}
+            </div>
+          )}
+
+          {/* Linked project (multi-repo) */}
+          {useWorktree && linkableProjects.length > 0 && (
+            <div className="mb-4">
+              <label className="block text-[12px] font-medium text-muted-foreground/70 mb-2">
+                <span className="flex items-center gap-1.5">
+                  <Link2 size={12} strokeWidth={1.8} />
+                  Linked project
+                  <span className="text-muted-foreground/40 font-normal">optional</span>
+                </span>
+              </label>
+              <select
+                value={linkedProjectId ?? ''}
+                onChange={(e) => {
+                  setLinkedProjectId(e.target.value || null);
+                  setLinkedUseExistingBranch(false);
+                  setLinkedSelectedBranch(null);
+                }}
+                className="w-full px-3.5 py-2.5 rounded-lg bg-background border border-input/60 text-foreground text-[13px] focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring/50 transition-all duration-150"
+              >
+                <option value="">None</option>
+                {linkableProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+
+              {linkedProjectId && (
+                <div className="mt-3 ml-2 pl-3 border-l-2 border-border/40 space-y-3">
+                  {/* Linked: use existing branch toggle */}
+                  <label className="flex items-center gap-3 cursor-pointer group">
+                    <div className="relative">
+                      <input
+                        type="checkbox"
+                        checked={linkedUseExistingBranch}
+                        onChange={(e) => setLinkedUseExistingBranch(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-8 h-[18px] rounded-full bg-accent peer-checked:bg-primary/80 transition-colors duration-200" />
+                      <div className="absolute top-[3px] left-[3px] w-3 h-3 rounded-full bg-muted-foreground/40 peer-checked:bg-primary-foreground peer-checked:translate-x-[14px] transition-all duration-200" />
+                    </div>
+                    <span className="text-[12px] text-foreground/80">Use existing branch</span>
+                  </label>
+
+                  {/* Linked: branch selector */}
+                  <div ref={linkedDropdownRef}>
+                    <label className="block text-[11px] font-medium text-muted-foreground/70 mb-1.5">
+                      {linkedUseExistingBranch
+                        ? 'Existing branch (checkout)'
+                        : 'Base branch (fork from)'}
+                    </label>
+                    <div className="relative">
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-background border border-input/60 focus-within:ring-2 focus-within:ring-ring/30 focus-within:border-ring/50 transition-all duration-150">
+                        {linkedBranchLoading ? (
+                          <Loader2
+                            size={11}
+                            className="animate-spin text-muted-foreground/50 shrink-0"
+                          />
+                        ) : (
+                          <GitBranch
+                            size={11}
+                            className="text-muted-foreground/40 shrink-0"
+                            strokeWidth={1.8}
+                          />
+                        )}
+                        <input
+                          ref={linkedSearchInputRef}
+                          type="text"
+                          value={
+                            linkedDropdownOpen
+                              ? linkedBranchSearch
+                              : linkedSelectedBranch?.name || ''
+                          }
+                          onChange={(e) => {
+                            setLinkedBranchSearch(e.target.value);
+                            if (!linkedDropdownOpen) setLinkedDropdownOpen(true);
+                          }}
+                          onFocus={() => {
+                            setLinkedBranchSearch('');
+                            setLinkedDropdownOpen(true);
+                          }}
+                          placeholder={
+                            linkedBranchLoading ? 'Fetching branches...' : 'Search branches...'
+                          }
+                          disabled={linkedBranchLoading}
+                          className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/30 outline-none disabled:opacity-50"
+                        />
+                        <ChevronDown
+                          size={12}
+                          className={`text-muted-foreground/40 shrink-0 transition-transform duration-150 ${linkedDropdownOpen ? 'rotate-180' : ''}`}
+                        />
+                      </div>
+
+                      {linkedDropdownOpen && (
+                        <div className="absolute z-50 mt-1 w-full bg-card border border-border/60 rounded-lg shadow-xl shadow-black/30 overflow-hidden">
+                          <div className="max-h-[160px] overflow-y-auto">
+                            {filteredLinkedBranches.length === 0 ? (
+                              <div className="px-3 py-2.5 text-[11px] text-muted-foreground/40 text-center">
+                                No branches found
+                              </div>
+                            ) : (
+                              filteredLinkedBranches.map((branch) => (
+                                <button
+                                  key={branch.ref}
+                                  type="button"
+                                  onClick={() => {
+                                    setLinkedSelectedBranch(branch);
+                                    setLinkedDropdownOpen(false);
+                                    setLinkedBranchSearch('');
+                                  }}
+                                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent/60 transition-colors duration-100 ${
+                                    linkedSelectedBranch?.ref === branch.ref ? 'bg-accent/40' : ''
+                                  }`}
+                                >
+                                  <GitBranch
+                                    size={10}
+                                    className="text-muted-foreground/40 shrink-0"
+                                    strokeWidth={1.8}
+                                  />
+                                  <span className="flex-1 truncate text-[11px] text-foreground/80">
+                                    {branch.name}
+                                  </span>
+                                  <span className="text-[9px] text-muted-foreground/40 font-mono shrink-0">
+                                    {branch.shortHash}
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Linked: push remote */}
+                  {!linkedUseExistingBranch && (
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                      <div className="relative">
+                        <input
+                          type="checkbox"
+                          checked={linkedPushRemote}
+                          onChange={(e) => setLinkedPushRemote(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-8 h-[18px] rounded-full bg-accent peer-checked:bg-primary/80 transition-colors duration-200" />
+                        <div className="absolute top-[3px] left-[3px] w-3 h-3 rounded-full bg-muted-foreground/40 peer-checked:bg-primary-foreground peer-checked:translate-x-[14px] transition-all duration-200" />
+                      </div>
+                      <span className="text-[12px] text-foreground/80">Push remote branch</span>
+                    </label>
+                  )}
+                </div>
               )}
             </div>
           )}

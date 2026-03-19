@@ -115,5 +115,21 @@ export function runMigrations(): void {
     /* already exists */
   }
 
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN linked_project_id TEXT REFERENCES projects(id)`);
+  } catch {
+    /* already exists */
+  }
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN linked_branch TEXT`);
+  } catch {
+    /* already exists */
+  }
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN linked_branch_created_by_dash INTEGER DEFAULT 0`);
+  } catch {
+    /* already exists */
+  }
+
   rawDb.pragma('foreign_keys = ON');
 }

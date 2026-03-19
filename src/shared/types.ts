@@ -48,6 +48,9 @@ export interface Task {
   linkedItems: LinkedItem[] | null;
   frontendPort: number | null;
   backendPort: number | null;
+  linkedProjectId: string | null;
+  linkedBranch: string | null;
+  linkedBranchCreatedByDash: boolean;
   archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -78,6 +81,8 @@ export interface WorktreeInfo {
   projectId: string;
   status: 'active' | 'error';
   createdAt: string;
+  linkedBranch?: string;
+  linkedBranchCreatedByDash?: boolean;
 }
 
 export interface ReserveWorktree {
@@ -94,6 +99,10 @@ export interface RemoveWorktreeOptions {
   deleteWorktreeDir?: boolean;
   deleteLocalBranch?: boolean;
   deleteRemoteBranch?: boolean;
+  linkedProjectPath?: string;
+  linkedBranch?: string;
+  deleteLinkedLocalBranch?: boolean;
+  deleteLinkedRemoteBranch?: boolean;
 }
 
 export interface TaskContextMetaItem {

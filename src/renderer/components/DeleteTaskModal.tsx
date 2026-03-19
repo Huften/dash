@@ -7,6 +7,8 @@ interface RemoveWorktreeOptions {
   deleteWorktreeDir: boolean;
   deleteLocalBranch: boolean;
   deleteRemoteBranch: boolean;
+  deleteLinkedLocalBranch?: boolean;
+  deleteLinkedRemoteBranch?: boolean;
 }
 
 interface DeleteTaskModalProps {
@@ -19,13 +21,23 @@ export function DeleteTaskModal({ task, onClose, onConfirm }: DeleteTaskModalPro
   const [deleteWorktreeDir, setDeleteWorktreeDir] = useState(true);
   const [deleteLocalBranch, setDeleteLocalBranch] = useState(true);
   const [deleteRemoteBranch, setDeleteRemoteBranch] = useState(false);
+  const [deleteLinkedLocalBranch, setDeleteLinkedLocalBranch] = useState(true);
+  const [deleteLinkedRemoteBranch, setDeleteLinkedRemoteBranch] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const hasLinkedProject = !!(task.linkedProjectId && task.linkedBranch);
 
   async function handleConfirm() {
     setIsDeleting(true);
     try {
       if (task.useWorktree) {
-        await onConfirm({ deleteWorktreeDir, deleteLocalBranch, deleteRemoteBranch });
+        await onConfirm({
+          deleteWorktreeDir,
+          deleteLocalBranch,
+          deleteRemoteBranch,
+          deleteLinkedLocalBranch: hasLinkedProject ? deleteLinkedLocalBranch : undefined,
+          deleteLinkedRemoteBranch: hasLinkedProject ? deleteLinkedRemoteBranch : undefined,
+        });
       } else {
         await onConfirm();
       }
@@ -101,6 +113,43 @@ export function DeleteTaskModal({ task, onClose, onConfirm }: DeleteTaskModalPro
                     </>
                   }
                 />
+              )}
+              {hasLinkedProject && (
+                <>
+                  <div className="mt-2 pt-2 border-t border-border/40">
+                    <p className="text-[11px] text-muted-foreground/50 mb-2">
+                      Linked project branch
+                    </p>
+                    <div className="flex flex-col gap-2.5">
+                      <CircleCheck
+                        checked={deleteLinkedLocalBranch}
+                        onChange={setDeleteLinkedLocalBranch}
+                        label={
+                          <>
+                            Delete linked local branch{' '}
+                            <span className="text-muted-foreground/50 font-normal">
+                              {task.linkedBranch}
+                            </span>
+                          </>
+                        }
+                      />
+                      {task.linkedBranchCreatedByDash && (
+                        <CircleCheck
+                          checked={deleteLinkedRemoteBranch}
+                          onChange={setDeleteLinkedRemoteBranch}
+                          label={
+                            <>
+                              Delete linked remote branch{' '}
+                              <span className="text-muted-foreground/50 font-normal">
+                                origin/{task.linkedBranch}
+                              </span>
+                            </>
+                          }
+                        />
+                      )}
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           )}

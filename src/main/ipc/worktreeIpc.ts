@@ -11,17 +11,29 @@ export function registerWorktreeIpc(): void {
         projectPath: string;
         taskName: string;
         baseRef?: string;
+        existingBranch?: string;
         projectId: string;
         linkedIssueNumbers?: number[];
         pushRemote?: boolean;
+        linkedProjectPath?: string;
+        linkedProjectId?: string;
+        linkedExistingBranch?: string;
+        linkedBaseRef?: string;
+        linkedPushRemote?: boolean;
       },
     ) => {
       try {
         const data = await worktreeService.createWorktree(args.projectPath, args.taskName, {
           baseRef: args.baseRef,
+          existingBranch: args.existingBranch,
           projectId: args.projectId,
           linkedIssueNumbers: args.linkedIssueNumbers,
           pushRemote: args.pushRemote,
+          linkedProjectPath: args.linkedProjectPath,
+          linkedProjectId: args.linkedProjectId,
+          linkedExistingBranch: args.linkedExistingBranch,
+          linkedBaseRef: args.linkedBaseRef,
+          linkedPushRemote: args.linkedPushRemote,
         });
         return { success: true, data };
       } catch (error) {
@@ -42,6 +54,10 @@ export function registerWorktreeIpc(): void {
           deleteWorktreeDir?: boolean;
           deleteLocalBranch?: boolean;
           deleteRemoteBranch?: boolean;
+          linkedProjectPath?: string;
+          linkedBranch?: string;
+          deleteLinkedLocalBranch?: boolean;
+          deleteLinkedRemoteBranch?: boolean;
         };
       },
     ) => {

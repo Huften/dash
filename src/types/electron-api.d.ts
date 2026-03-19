@@ -60,9 +60,15 @@ export interface ElectronAPI {
     projectPath: string;
     taskName: string;
     baseRef?: string;
+    existingBranch?: string;
     projectId: string;
     linkedIssueNumbers?: number[];
     pushRemote?: boolean;
+    linkedProjectPath?: string;
+    linkedProjectId?: string;
+    linkedExistingBranch?: string;
+    linkedBaseRef?: string;
+    linkedPushRemote?: boolean;
   }) => Promise<IpcResponse<WorktreeInfo>>;
   worktreeRemove: (args: {
     projectPath: string;
@@ -72,6 +78,10 @@ export interface ElectronAPI {
       deleteWorktreeDir?: boolean;
       deleteLocalBranch?: boolean;
       deleteRemoteBranch?: boolean;
+      linkedProjectPath?: string;
+      linkedBranch?: string;
+      deleteLinkedLocalBranch?: boolean;
+      deleteLinkedRemoteBranch?: boolean;
     };
   }) => Promise<IpcResponse<void>>;
   worktreeClaimReserve: (args: {
