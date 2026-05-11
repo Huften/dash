@@ -45,7 +45,10 @@ class ContextUsageServiceImpl {
    */
   updateFromStatusLine(ptyId: string, data: RawStatusLinePayload): void {
     const cw = data.context_window;
-    if (!cw) return;
+    if (!cw) {
+      console.warn('[ContextUsageService] No context_window in statusLine data for ptyId=', ptyId);
+      return;
+    }
 
     const total = typeof cw.context_window_size === 'number' ? cw.context_window_size : 0;
     if (total === 0) {
@@ -62,6 +65,11 @@ class ContextUsageServiceImpl {
         0,
       );
     } else {
+      console.warn(
+        '[ContextUsageService] current_usage missing or unexpected type for ptyId=',
+        ptyId,
+        '— falling back to used_percentage',
+      );
       const pct = typeof cw.used_percentage === 'number' ? cw.used_percentage : 0;
       used = Math.round((pct / 100) * total);
     }
@@ -124,11 +132,7 @@ class ContextUsageServiceImpl {
   }
 
   getAllStatusLine(): Record<string, StatusLineData> {
-    const result: Record<string, StatusLineData> = {};
-    for (const [id, sl] of this.statusLineData) {
-      result[id] = sl;
-    }
-    return result;
+    return Object.fromEntries(this.statusLineData);
   }
 
   unregister(ptyId: string): void {

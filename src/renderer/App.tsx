@@ -8,9 +8,11 @@ import {
 import { LeftSidebar } from './components/LeftSidebar';
 import { MainContent } from './components/MainContent';
 import { FileChangesPanel } from './components/FileChangesPanel';
+import { StructuredView } from './components/structured/StructuredView';
 import { ShellDrawerWrapper } from './components/ShellDrawerWrapper';
 import { DiffViewer } from './components/DiffViewer';
 import { CommitGraphModal } from './components/CommitGraph/CommitGraphModal';
+import { SkillsBrowserModal } from './components/SkillsBrowserModal';
 import { TaskModal } from './components/TaskModal';
 import { AddProjectModal } from './components/AddProjectModal';
 import { DeleteTaskModal } from './components/DeleteTaskModal';
@@ -19,7 +21,7 @@ import { RemoteControlModal } from './components/RemoteControlModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ProjectSettingsModal } from './components/ProjectSettingsModal';
 import { AdoSetupModal } from './components/AdoSetupModal';
-import { RateLimitsWidget } from './components/RateLimitsWidget';
+import { UsageWidget } from './components/UsageWidget';
 import { parseAdoRemote } from '../shared/urls';
 import { ToastContainer } from './components/Toast';
 import { toast } from 'sonner';
@@ -37,6 +39,8 @@ import type {
   ActivityInfo,
   PixelAgentsConfig,
   PixelAgentsStatus,
+  RtkStatus,
+  RtkDownloadProgress,
 } from '../shared/types';
 import type { CreateTaskOptions } from './components/TaskModal';
 import { formatTaskContextPrompt } from '../shared/taskContext';
@@ -47,6 +51,7 @@ import { playNotificationSound, playPeonSound } from './sounds';
 import type { NotificationSound } from './sounds';
 
 const GIT_POLL_INTERVAL = 5000;
+const EMPTY_CONTEXT_USAGE: Record<string, import('../shared/types').ContextUsage> = {};
 
 export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -74,6 +79,7 @@ export function App() {
     project: string;
   } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSkillsBrowser, setShowSkillsBrowser] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string | undefined>();
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark';
@@ -90,6 +96,14 @@ export function App() {
   const [desktopNotification, setDesktopNotification] = useState(() => {
     return localStorage.getItem('desktopNotification') === 'true';
   });
+  const [autoUpdateEnabled, setAutoUpdateEnabled] = useState(() => {
+    const stored = localStorage.getItem('autoUpdateEnabled');
+    return stored === null ? true : stored === 'true';
+  });
+  const [updateNotificationsEnabled, setUpdateNotificationsEnabled] = useState(() => {
+    const stored = localStorage.getItem('updateNotificationsEnabled');
+    return stored === null ? true : stored === 'true';
+  });
   const [shellDrawerEnabled, setShellDrawerEnabled] = useState(() => {
     const stored = localStorage.getItem('shellDrawerEnabled');
     return stored === null ? true : stored === 'true';
@@ -103,9 +117,53 @@ export function App() {
   const [terminalTheme, setTerminalTheme] = useState(() => {
     return localStorage.getItem('terminalTheme') || 'default';
   });
-  const [preferredIDE, setPreferredIDE] = useState<'cursor' | 'code' | 'auto'>(() => {
-    return (localStorage.getItem('preferredIDE') as 'cursor' | 'code' | 'auto') || 'auto';
+  const [preferredIDE, setPreferredIDE] = useState<string>(() => {
+    const stored = localStorage.getItem('preferredIDE');
+    if (!stored) return 'auto';
+    // Migrate legacy 'code' → 'vscode'
+    if (stored === 'code') {
+      localStorage.setItem('preferredIDE', 'vscode');
+      return 'vscode';
+    }
+    return stored;
   });
+  const [customIDE, setCustomIDE] = useState<{ path: string; args: string[] }>(() => {
+    const raw = localStorage.getItem('customIDE');
+    if (!raw) return { path: '', args: [] };
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.path === 'string' && Array.isArray(parsed.args)) {
+        return parsed;
+      }
+      console.warn('[openInIDE] customIDE has unexpected shape, resetting');
+    } catch (err) {
+      console.warn('[openInIDE] Failed to parse customIDE from localStorage:', err);
+    }
+    return { path: '', args: [] };
+  });
+  const [availableIDEs, setAvailableIDEs] = useState<Array<{ id: string; label: string }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.detectAvailableIDEs().then((res) => {
+      if (cancelled) return;
+      if (!res.success || !res.data) {
+        console.warn('[openInIDE] Failed to detect available IDEs:', res.error);
+        return;
+      }
+      setAvailableIDEs(res.data);
+      // Self-heal: if the stored IDE was uninstalled, fall back to auto so
+      // Settings doesn't show a phantom selection and clicks don't 404.
+      setPreferredIDE((current) => {
+        if (current === 'auto' || current === 'custom') return current;
+        if (res.data!.some((d) => d.id === current)) return current;
+        localStorage.removeItem('preferredIDE');
+        return 'auto';
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [commitAttribution, setCommitAttribution] = useState<string | undefined>(() => {
     const stored = localStorage.getItem('commitAttribution');
     if (stored === null) return undefined; // "default" — key absent
@@ -146,12 +204,73 @@ export function App() {
     });
   }, []);
 
+  // RTK state
+  const [rtkStatus, setRtkStatus] = useState<RtkStatus | null>(null);
+  const [rtkDownloadProgress, setRtkDownloadProgress] = useState<RtkDownloadProgress | null>(null);
+
+  useEffect(() => {
+    // Retry once on transient failure — without it, a single flake at startup
+    // leaves rtkStatus null forever and the Settings card stays stuck on
+    // "loading…".
+    let cancelled = false;
+    const tryFetch = (attempt: number): void => {
+      window.electronAPI.rtkGetStatus().then((resp) => {
+        if (cancelled) return;
+        if (resp.success && resp.data) {
+          setRtkStatus(resp.data);
+        } else if (attempt < 1) {
+          console.warn('[rtk:getStatus] retrying after transient failure:', resp.error);
+          setTimeout(() => tryFetch(attempt + 1), 500);
+        } else {
+          console.error('[rtk:getStatus] gave up after retry:', resp.error);
+          // Sentinel so the Settings card stops spinning. `enabled` is
+          // unrepresentable on the not-installed arm by design.
+          setRtkStatus({ installed: false, downloadable: false });
+        }
+      });
+    };
+    tryFetch(0);
+    const cleanup = window.electronAPI.onRtkDownloadProgress((progress) => {
+      setRtkDownloadProgress(progress);
+      if (progress.phase === 'done') {
+        window.electronAPI.rtkGetStatus().then((resp) => {
+          if (resp.success && resp.data) setRtkStatus(resp.data);
+          else console.error('[rtk:getStatus after download]', resp.error);
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+      cleanup();
+    };
+  }, []);
+
   // Sync desktop notification settings to main process
   useEffect(() => {
     window.electronAPI.setDesktopNotification?.({
       enabled: desktopNotification,
     });
   }, [desktopNotification]);
+
+  // Hydrate auto-update preference from main (file is source of truth) on mount
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.autoUpdateGetEnabled?.().then((res) => {
+      if (cancelled) return;
+      if (res.success && typeof res.data === 'boolean') {
+        setAutoUpdateEnabled(res.data);
+        localStorage.setItem('autoUpdateEnabled', String(res.data));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Sync auto-update enabled to main process
+  useEffect(() => {
+    window.electronAPI.autoUpdateSetEnabled?.(autoUpdateEnabled);
+  }, [autoUpdateEnabled]);
   // Sync commit attribution to main process
   useEffect(() => {
     window.electronAPI.setCommitAttribution?.(commitAttribution);
@@ -235,13 +354,37 @@ export function App() {
     });
   }, [activeTaskId]);
 
-  // Show inline usage bars in sidebar and header
+  // Right-sidebar: 5-hour / 7-day rate limit bars
+  const [showRateLimits, setShowRateLimits] = useState(
+    () => localStorage.getItem('showRateLimits') !== 'false',
+  );
+  useEffect(() => {
+    localStorage.setItem('showRateLimits', String(showRateLimits));
+  }, [showRateLimits]);
+
+  // Right-sidebar: current session (context) usage bar
   const [showUsageInline, setShowUsageInline] = useState(
     () => localStorage.getItem('showUsageInline') !== 'false',
   );
   useEffect(() => {
     localStorage.setItem('showUsageInline', String(showUsageInline));
   }, [showUsageInline]);
+
+  // Left-sidebar task cards: context progress bar under each task
+  const [showContextUsageOnTaskCards, setShowContextUsageOnTaskCards] = useState(
+    () => localStorage.getItem('showContextUsageOnTaskCards') !== 'false',
+  );
+  useEffect(() => {
+    localStorage.setItem('showContextUsageOnTaskCards', String(showContextUsageOnTaskCards));
+  }, [showContextUsageOnTaskCards]);
+
+  // Right-panel: structured session view (opt-in, off by default)
+  const [showStructuredView, setShowStructuredView] = useState(
+    () => localStorage.getItem('showStructuredView') === 'true',
+  );
+  useEffect(() => {
+    localStorage.setItem('showStructuredView', String(showStructuredView));
+  }, [showStructuredView]);
 
   // Rotation — tasks the user cycles through with Ctrl+Tab
   const [showActiveTasksSection, setShowActiveTasksSection] = useState(
@@ -256,7 +399,8 @@ export function App() {
       const stored = localStorage.getItem('rotationExclusions');
       return stored ? new Set(JSON.parse(stored)) : new Set();
     } catch (err) {
-      console.warn('Failed to parse rotationExclusions from localStorage:', err);
+      console.error('Failed to parse rotationExclusions from localStorage, resetting:', err);
+      localStorage.removeItem('rotationExclusions');
       return new Set();
     }
   });
@@ -307,6 +451,9 @@ export function App() {
   const [changesPanelCollapsed, setChangesPanelCollapsed] = useState(() => {
     return localStorage.getItem('changesPanelCollapsed') === 'true';
   });
+  const [rightPanelTab, setRightPanelTab] = useState<'changes' | 'structured'>(() => {
+    return (localStorage.getItem('rightPanelTab') as 'changes' | 'structured') || 'structured';
+  });
 
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
   const changesPanelRef = useRef<ImperativePanelHandle>(null);
@@ -331,6 +478,33 @@ export function App() {
   const activeProjectTasks = activeProjectId
     ? (tasksByProject[activeProjectId] || []).filter((t) => !t.archivedAt)
     : [];
+
+  // Memoized props for SkillsBrowserModal. Without these, App.tsx re-renders (terminal
+  // activity, git polls, PTY events) hand the modal new array references every time,
+  // and the modal's loadInstalled useCallback re-fires its refetch effect — flickering
+  // the list back to a loading state on every unrelated re-render.
+  const skillsModalProjects = useMemo(
+    () => projects.map((p) => ({ id: p.id, name: p.name, path: p.path })),
+    [projects],
+  );
+  const skillsModalActiveTasks = useMemo(
+    () =>
+      projects.flatMap((p) => {
+        const tasks = tasksByProject[p.id] ?? [];
+        // Only worktree-backed, non-archived tasks: a task without a worktree shares the
+        // project root, so installing there would just be a project install.
+        return tasks
+          .filter((t) => t.useWorktree && !t.archivedAt)
+          .map((t) => ({
+            taskId: t.id,
+            taskName: t.name,
+            worktreePath: t.path,
+            projectId: p.id,
+            projectName: p.name,
+          }));
+      }),
+    [projects, tasksByProject],
+  );
 
   // Rotation: all tasks with activity, minus exclusions
   const rotationTasks = React.useMemo(() => {
@@ -485,7 +659,7 @@ export function App() {
   }, [tasksByProject]);
 
   // Threshold alerts — fires toast notifications when usage exceeds thresholds
-  useThresholdAlerts(statusLineData, usageThresholds, taskNames);
+  useThresholdAlerts(statusLineData, latestRateLimits, usageThresholds, taskNames);
 
   // Persist usage thresholds
   useEffect(() => {
@@ -531,6 +705,48 @@ export function App() {
       }
     }
   }, [projects, activeProjectId]);
+
+  // Detect pre-existing duplicate non-worktree tasks at the same cwd and warn
+  // the user once per app session. The new resume strategy (`claude --continue`)
+  // assumes one active task per cwd; duplicates from before the constraint
+  // existed will cross-resume each other's sessions until manually resolved.
+  const duplicateWarningFiredRef = useRef(false);
+  useEffect(() => {
+    if (duplicateWarningFiredRef.current) return;
+    if (Object.keys(tasksByProject).length < projects.length) return;
+
+    const offenders: { projectName: string; path: string; tasks: string[] }[] = [];
+    for (const [projectId, tasks] of Object.entries(tasksByProject)) {
+      const groups = new Map<string, Task[]>();
+      for (const t of tasks) {
+        if (t.useWorktree || t.archivedAt) continue;
+        const list = groups.get(t.path) ?? [];
+        list.push(t);
+        groups.set(t.path, list);
+      }
+      for (const [path, group] of groups) {
+        if (group.length > 1) {
+          const project = projects.find((p) => p.id === projectId);
+          offenders.push({
+            projectName: project?.name ?? projectId,
+            path,
+            tasks: group.map((t) => t.name),
+          });
+        }
+      }
+    }
+
+    if (offenders.length === 0) return;
+    duplicateWarningFiredRef.current = true;
+
+    const summary = offenders
+      .map((o) => `"${o.projectName}": ${o.tasks.map((n) => `"${n}"`).join(', ')}`)
+      .join('; ');
+    toast.error(
+      `Multiple tasks share the same directory and may cross-resume each other's Claude sessions. Archive duplicates to fix: ${summary}`,
+      { duration: 20_000 },
+    );
+  }, [tasksByProject, projects]);
 
   // Theme
   useEffect(() => {
@@ -691,6 +907,9 @@ export function App() {
         } else if (showCommitGraph) {
           e.preventDefault();
           setShowCommitGraph(false);
+        } else if (showSkillsBrowser) {
+          e.preventDefault();
+          setShowSkillsBrowser(false);
         } else if (showSettings) {
           e.preventDefault();
           setShowSettings(false);
@@ -746,6 +965,7 @@ export function App() {
     deleteProjectTarget,
     showDiff,
     showCommitGraph,
+    showSkillsBrowser,
     showSettings,
     showTaskModal,
     showAddProjectModal,
@@ -855,12 +1075,21 @@ export function App() {
   async function loadProjects() {
     const resp = await window.electronAPI.getProjects();
     if (resp.success && resp.data) {
-      setProjects(applyProjectOrder(resp.data));
-      if (resp.data.length > 0) {
+      // On Windows, older projects may have been saved with the full path as the name.
+      // Derive the folder name from the path so the sidebar shows short names.
+      const projects = resp.data.map((p) => {
+        const looksLikePath = p.name.includes('\\') || p.name.includes('/');
+        if (looksLikePath) {
+          return { ...p, name: p.name.split(/[\\/]/).pop() || p.name };
+        }
+        return p;
+      });
+      setProjects(applyProjectOrder(projects));
+      if (projects.length > 0) {
         // Only default to first project if no valid selection exists
         setActiveProjectId((prev) => {
-          if (prev && resp.data!.some((p) => p.id === prev)) return prev;
-          return resp.data![0].id;
+          if (prev && projects.some((p) => p.id === prev)) return prev;
+          return projects[0].id;
         });
       }
     }
@@ -906,7 +1135,7 @@ export function App() {
     const resp = await window.electronAPI.showOpenDialog();
     if (resp.success && resp.data && resp.data.length > 0) {
       const folderPath = resp.data[0];
-      const name = folderPath.split('/').pop() || 'Untitled';
+      const name = folderPath.split(/[\\/]/).pop() || 'Untitled';
 
       const gitResp = await window.electronAPI.detectGit(folderPath);
       const gitInfo = gitResp.success ? gitResp.data : null;
@@ -982,7 +1211,7 @@ export function App() {
           branch: task.branch,
           options: {
             deleteWorktreeDir: options.deleteWorktreeDirs,
-            deleteLocalBranch: options.deleteLocalBranches,
+            deleteLocalBranch: options.deleteLocalBranches && task.branchCreatedByDash,
             deleteRemoteBranch: options.deleteRemoteBranches && task.branchCreatedByDash,
           },
         });
@@ -1022,51 +1251,94 @@ export function App() {
     setShowTaskModal(true);
   }
 
-  async function handleCreateTask(options: CreateTaskOptions) {
-    const { name, useWorktree, autoApprove, baseRef, pushRemote, linkedItems } = options;
+  async function handleCreateTask(options: CreateTaskOptions): Promise<boolean> {
+    const { name, autoApprove, linkedItems } = options;
 
     const targetProjectId = taskModalProjectId || activeProjectId;
     const targetProject = projects.find((p) => p.id === targetProjectId);
-    if (!targetProject) return;
+    if (!targetProject) return false;
 
     setIsCreatingTask(true);
     try {
       let worktreeInfo: { branch: string; path: string } | null = null;
 
-      // Split linked items by provider
       const ghItems =
         linkedItems?.filter((i): i is LinkedGithubIssue => i.provider === 'github') ?? [];
       const adoItems =
         linkedItems?.filter((i): i is LinkedAdoWorkItem => i.provider === 'ado') ?? [];
       const ghIssueNumbers = ghItems.map((i) => i.id);
 
-      if (useWorktree) {
-        const claimResp = await window.electronAPI.worktreeClaimReserve({
-          projectId: targetProject.id,
-          taskName: name,
-          baseRef,
-          linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
-          pushRemote,
-        });
+      switch (options.kind) {
+        case 'worktree-new-branch': {
+          // New branch: try reserve pool, fall back to direct creation
+          const claimResp = await window.electronAPI.worktreeClaimReserve({
+            projectId: targetProject.id,
+            taskName: name,
+            baseRef: options.baseRef,
+            linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
+            pushRemote: options.pushRemote,
+          });
 
-        if (claimResp.success && claimResp.data) {
-          worktreeInfo = { branch: claimResp.data.branch, path: claimResp.data.path };
-        } else {
-          const createResp = await window.electronAPI.worktreeCreate({
+          if (claimResp.success && claimResp.data) {
+            worktreeInfo = { branch: claimResp.data.branch, path: claimResp.data.path };
+          } else {
+            const createResp = await window.electronAPI.worktreeCreate({
+              projectPath: targetProject.path,
+              taskName: name,
+              baseRef: options.baseRef,
+              projectId: targetProject.id,
+              linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
+              pushRemote: options.pushRemote,
+            });
+            if (createResp.success && createResp.data) {
+              worktreeInfo = { branch: createResp.data.branch, path: createResp.data.path };
+            } else {
+              toast.error(createResp.error || 'Failed to create worktree');
+              return false;
+            }
+          }
+          break;
+        }
+        case 'worktree-existing': {
+          const createResp = await window.electronAPI.worktreeCreateFromExisting({
             projectPath: targetProject.path,
             taskName: name,
-            baseRef,
+            branch: options.branch,
             projectId: targetProject.id,
             linkedIssueNumbers: ghIssueNumbers.length > 0 ? ghIssueNumbers : undefined,
-            pushRemote,
           });
           if (createResp.success && createResp.data) {
             worktreeInfo = { branch: createResp.data.branch, path: createResp.data.path };
+          } else {
+            toast.error(createResp.error || 'Failed to create worktree from existing branch');
+            return false;
           }
+          break;
         }
+        case 'in-place-checkout': {
+          const checkoutResp = await window.electronAPI.gitCheckoutBranch({
+            cwd: targetProject.path,
+            branch: options.branch,
+          });
+          if (!checkoutResp.success) {
+            toast.error(checkoutResp.error || 'Failed to checkout branch');
+            return false;
+          }
+          break;
+        }
+        case 'in-place-no-git':
+          break;
       }
 
-      const branch = worktreeInfo?.branch ?? 'main';
+      const useWorktree =
+        options.kind === 'worktree-new-branch' || options.kind === 'worktree-existing';
+      const fallbackBranch =
+        options.kind === 'worktree-existing' || options.kind === 'in-place-checkout'
+          ? options.branch
+          : options.kind === 'worktree-new-branch'
+            ? options.baseRef
+            : 'main';
+      const branch = worktreeInfo?.branch ?? fallbackBranch;
       const taskPath = worktreeInfo?.path ?? targetProject.path;
 
       const saveResp = await window.electronAPI.saveTask({
@@ -1076,11 +1348,16 @@ export function App() {
         path: taskPath,
         useWorktree,
         autoApprove,
-        branchCreatedByDash: useWorktree && !!worktreeInfo,
+        // Only Dash-created branches should be auto-deleted on task removal.
+        branchCreatedByDash: options.kind === 'worktree-new-branch' && !!worktreeInfo,
         linkedItems: linkedItems ?? null,
       });
 
-      if (saveResp.success && saveResp.data) {
+      if (!saveResp.success || !saveResp.data) {
+        toast.error(saveResp.error || 'Failed to save task');
+        return false;
+      }
+      {
         const taskId = saveResp.data.id;
 
         // Store task context so the SessionStart hook can inject it
@@ -1146,6 +1423,7 @@ export function App() {
             .catch(() => toast.error(`Failed to link branch to work item #${wi.id}`));
         }
       }
+      return true;
     } finally {
       setIsCreatingTask(false);
     }
@@ -1180,7 +1458,13 @@ export function App() {
             projectPath: project.path,
             worktreePath: task.path,
             branch: task.branch,
-            options,
+            options: options
+              ? {
+                  deleteWorktreeDir: options.deleteWorktreeDir,
+                  deleteLocalBranch: options.deleteLocalBranch && task.branchCreatedByDash,
+                  deleteRemoteBranch: options.deleteRemoteBranch && task.branchCreatedByDash,
+                }
+              : undefined,
           });
         }
       }
@@ -1382,7 +1666,7 @@ export function App() {
                 setShowSettings(true);
               }}
               onOpenPixelAgents={() => {
-                setSettingsInitialTab('pixel-agents');
+                setSettingsInitialTab('add-ons');
                 setShowSettings(true);
               }}
               onShowCommitGraph={(projectId) => {
@@ -1394,7 +1678,7 @@ export function App() {
               taskActivity={taskActivity}
               unseenTaskIds={unseenTaskIds}
               remoteControlStates={remoteControlStates}
-              contextUsage={showUsageInline ? contextUsage : {}}
+              contextUsage={showContextUsageOnTaskCards ? contextUsage : EMPTY_CONTEXT_USAGE}
               onReorderProjects={handleReorderProjects}
               onReorderTasks={handleReorderTasks}
               onReorderTasksCommit={handleReorderTasksCommit}
@@ -1408,6 +1692,7 @@ export function App() {
               onRemoveFromRotation={removeFromRotation}
               showActiveTasksSection={showActiveTasksSection}
               onToggleActiveTasksSection={() => setShowActiveTasksSection((v) => !v)}
+              onOpenSkillsBrowser={() => setShowSkillsBrowser(true)}
             />
           </ShellDrawerWrapper>
         </Panel>
@@ -1446,7 +1731,6 @@ export function App() {
               taskActivity={taskActivity}
               unseenTaskIds={unseenTaskIds}
               remoteControlStates={remoteControlStates}
-              contextUsage={showUsageInline ? contextUsage : {}}
               onSelectTask={setActiveTaskId}
               onEnableRemoteControl={(taskId) => setRemoteControlModalPtyId(taskId)}
               onNewTask={() => activeProjectId && handleNewTask(activeProjectId)}
@@ -1499,10 +1783,15 @@ export function App() {
             >
               <div className="h-full flex flex-col overflow-hidden">
                 {!changesPanelCollapsed &&
-                  latestRateLimits &&
-                  (latestRateLimits.fiveHour || latestRateLimits.sevenDay) && (
-                    <RateLimitsWidget rateLimits={latestRateLimits} />
-                  )}
+                  (() => {
+                    const rawCtx = activeTask ? contextUsage[activeTask.id] : undefined;
+                    const activeCtx = showUsageInline ? rawCtx : undefined;
+                    const rateLimits = showRateLimits && latestRateLimits ? latestRateLimits : {};
+                    const hasRateLimits = rateLimits.fiveHour || rateLimits.sevenDay;
+                    const hasCtx = activeCtx && activeCtx.percentage > 0;
+                    if (!hasRateLimits && !hasCtx) return null;
+                    return <UsageWidget rateLimits={rateLimits} contextUsage={activeCtx} />;
+                  })()}
                 <ShellDrawerWrapper
                   enabled={
                     shellDrawerEnabled && shellDrawerPosition === 'right' && !changesPanelCollapsed
@@ -1538,6 +1827,31 @@ export function App() {
                     collapsed={changesPanelCollapsed}
                     onToggleCollapse={toggleChangesPanel}
                     onShowCommitGraph={() => setShowCommitGraph(true)}
+                    tabs={
+                      showStructuredView
+                        ? {
+                            options: [
+                              { id: 'structured', label: 'Tool use' },
+                              { id: 'changes', label: 'Changes' },
+                            ],
+                            activeId: changesPanelCollapsed ? 'changes' : rightPanelTab,
+                            onChange: (id) => {
+                              const next = id === 'structured' ? 'structured' : 'changes';
+                              setRightPanelTab(next);
+                              localStorage.setItem('rightPanelTab', next);
+                            },
+                          }
+                        : undefined
+                    }
+                    alternateBody={
+                      showStructuredView && activeTask ? (
+                        <StructuredView
+                          key={`structured-${activeTask.id}`}
+                          taskId={activeTask.id}
+                          taskPath={activeTask.path}
+                        />
+                      ) : null
+                    }
                   />
                 </ShellDrawerWrapper>
               </div>
@@ -1555,40 +1869,43 @@ export function App() {
         />
       )}
 
-      {showTaskModal && (
-        <TaskModal
-          projectPath={
-            projects.find((p) => p.id === (taskModalProjectId || activeProjectId))?.path ?? ''
-          }
-          projectId={taskModalProjectId || activeProjectId || undefined}
-          isGitRepo={
-            projects.find((p) => p.id === (taskModalProjectId || activeProjectId))?.isGitRepo ??
-            false
-          }
-          gitRemote={
-            projects.find((p) => p.id === (taskModalProjectId || activeProjectId))?.gitRemote ??
-            null
-          }
-          onClose={() => setShowTaskModal(false)}
-          onCreate={handleCreateTask}
-          onGitInit={() => {
-            const pid = taskModalProjectId || activeProjectId;
-            const proj = projects.find((p) => p.id === pid);
-            if (proj) {
-              window.electronAPI.detectGit(proj.path).then(async (gitResp) => {
-                const gitInfo = gitResp.success ? gitResp.data : null;
-                await window.electronAPI.saveProject({
-                  ...proj,
-                  isGitRepo: gitInfo?.isGitRepo ?? true,
-                  gitRemote: gitInfo?.remote ?? null,
-                  gitBranch: gitInfo?.branch ?? null,
-                });
-                loadProjects();
-              });
-            }
-          }}
-        />
-      )}
+      {showTaskModal &&
+        (() => {
+          const modalProjectId = taskModalProjectId || activeProjectId;
+          const modalProject = projects.find((p) => p.id === modalProjectId);
+          const modalTasks = modalProjectId ? (tasksByProject[modalProjectId] ?? []) : [];
+          const existingNonWorktreeTask =
+            modalTasks.find((t) => !t.useWorktree && !t.archivedAt) ?? null;
+          return (
+            <TaskModal
+              projectPath={modalProject?.path ?? ''}
+              projectId={modalProjectId || undefined}
+              isGitRepo={modalProject?.isGitRepo ?? false}
+              gitRemote={modalProject?.gitRemote ?? null}
+              existingNonWorktreeTask={
+                existingNonWorktreeTask
+                  ? { id: existingNonWorktreeTask.id, name: existingNonWorktreeTask.name }
+                  : null
+              }
+              onClose={() => setShowTaskModal(false)}
+              onCreate={handleCreateTask}
+              onGitInit={() => {
+                if (modalProject) {
+                  window.electronAPI.detectGit(modalProject.path).then(async (gitResp) => {
+                    const gitInfo = gitResp.success ? gitResp.data : null;
+                    await window.electronAPI.saveProject({
+                      ...modalProject,
+                      isGitRepo: gitInfo?.isGitRepo ?? true,
+                      gitRemote: gitInfo?.remote ?? null,
+                      gitBranch: gitInfo?.branch ?? null,
+                    });
+                    loadProjects();
+                  });
+                }
+              }}
+            />
+          );
+        })()}
 
       {adoSetup && (
         <AdoSetupModal
@@ -1630,8 +1947,14 @@ export function App() {
             localStorage.setItem('theme', t);
             sessionRegistry.setAllTerminalThemes(terminalTheme, t === 'dark');
           }}
+          showRateLimits={showRateLimits}
+          onShowRateLimitsChange={setShowRateLimits}
           showUsageInline={showUsageInline}
           onShowUsageInlineChange={setShowUsageInline}
+          showContextUsageOnTaskCards={showContextUsageOnTaskCards}
+          onShowContextUsageOnTaskCardsChange={setShowContextUsageOnTaskCards}
+          showStructuredView={showStructuredView}
+          onShowStructuredViewChange={setShowStructuredView}
           showActiveTasksSection={showActiveTasksSection}
           onShowActiveTasksSectionChange={setShowActiveTasksSection}
           shellDrawerEnabled={shellDrawerEnabled}
@@ -1666,6 +1989,16 @@ export function App() {
             setDesktopNotification(v);
             localStorage.setItem('desktopNotification', String(v));
           }}
+          autoUpdateEnabled={autoUpdateEnabled}
+          onAutoUpdateEnabledChange={(v) => {
+            setAutoUpdateEnabled(v);
+            localStorage.setItem('autoUpdateEnabled', String(v));
+          }}
+          updateNotificationsEnabled={updateNotificationsEnabled}
+          onUpdateNotificationsEnabledChange={(v) => {
+            setUpdateNotificationsEnabled(v);
+            localStorage.setItem('updateNotificationsEnabled', String(v));
+          }}
           activeProjectPath={activeProject?.path}
           preferredIDE={preferredIDE}
           onPreferredIDEChange={(v) => {
@@ -1674,6 +2007,16 @@ export function App() {
               localStorage.removeItem('preferredIDE');
             } else {
               localStorage.setItem('preferredIDE', v);
+            }
+          }}
+          availableIDEs={availableIDEs}
+          customIDE={customIDE}
+          onCustomIDEChange={(v) => {
+            setCustomIDE(v);
+            if (!v.path && v.args.length === 0) {
+              localStorage.removeItem('customIDE');
+            } else {
+              localStorage.setItem('customIDE', JSON.stringify(v));
             }
           }}
           commitAttribution={commitAttribution}
@@ -1715,8 +2058,41 @@ export function App() {
             window.electronAPI.pixelAgentsSaveConfig(config);
           }}
           pixelAgentsStatus={pixelAgentsStatus}
-          statusLineData={statusLineData}
-          taskNames={taskNames}
+          rtkStatus={rtkStatus}
+          onRtkEnabledChange={(enabled) => {
+            // Optimistic update only applies to the installed arm — the type
+            // forbids `enabled` on { installed: false }.
+            setRtkStatus((prev) => (prev?.installed ? { ...prev, enabled } : prev));
+            window.electronAPI.rtkSetEnabled(enabled).then((resp) => {
+              if (!resp.success) {
+                toast.error(resp.error ?? 'Failed to toggle RTK');
+                window.electronAPI.rtkGetStatus().then((s) => {
+                  if (s.success && s.data) setRtkStatus(s.data);
+                  else console.error('[rtk:getStatus after setEnabled failure]', s.error);
+                });
+                return;
+              }
+              if (resp.data?.warning) {
+                toast.warning(resp.data.warning);
+              }
+            });
+          }}
+          onRtkDownload={() => {
+            setRtkDownloadProgress({ phase: 'downloading', percent: 0 });
+            window.electronAPI.rtkDownload().then((resp) => {
+              if (!resp.success) {
+                setRtkDownloadProgress({
+                  phase: 'error',
+                  error: resp.error ?? 'download failed',
+                });
+                return;
+              }
+              if (resp.data?.warning) {
+                toast.warning(resp.data.warning);
+              }
+            });
+          }}
+          rtkDownloadProgress={rtkDownloadProgress}
           latestRateLimits={latestRateLimits}
           usageThresholds={usageThresholds}
           onUsageThresholdsChange={setUsageThresholds}
@@ -1769,6 +2145,16 @@ export function App() {
         />
       )}
 
+      {showSkillsBrowser && (
+        <SkillsBrowserModal
+          projects={skillsModalProjects}
+          activeProjectId={activeProjectId ?? undefined}
+          activeTasks={skillsModalActiveTasks}
+          currentTaskId={activeTaskId ?? undefined}
+          onClose={() => setShowSkillsBrowser(false)}
+        />
+      )}
+
       {showDiff && (
         <DiffViewer
           diff={diffResult}
@@ -1781,7 +2167,7 @@ export function App() {
         />
       )}
 
-      <ToastContainer />
+      <ToastContainer updateNotificationsEnabled={updateNotificationsEnabled} />
     </div>
   );
 }

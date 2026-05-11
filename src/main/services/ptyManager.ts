@@ -3,46 +3,49 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { type WebContents, app } from 'electron';
+import { type WebContents, app, BrowserWindow } from 'electron';
 import { activityMonitor } from './ActivityMonitor';
 import { hookServer } from './HookServer';
 import { contextUsageService } from './ContextUsageService';
 import { DatabaseService } from './DatabaseService';
+import { RtkService } from './RtkService';
+import {
+  type Hook,
+  type HookEntry,
+  type HttpHook,
+  type CommandHook,
+  type DashHookEndpoint,
+  type DashHookEvent,
+  DASH_HOOK_EVENTS,
+  entryIsDashOwned,
+  mergeHookEntries,
+} from './hookSettingsMerge';
+import { encodeProjectPath } from '../utils/jsonlParser';
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Locate the Claude projects directory for a given cwd.
- * Claude stores sessions under ~/.claude/projects/<encoded-cwd>/.
- */
+/** Exact-match-only project dir lookup. See SessionWatcherService.findProjectDir
+ *  for the rationale (PR #117/#124) and `encodeProjectPath` for the platform rules. */
 function findClaudeProjectDir(cwd: string): string | null {
   try {
     const projectsDir = path.join(os.homedir(), '.claude', 'projects');
-    if (!fs.existsSync(projectsDir)) return null;
-
-    // Path-based: slashes → hyphens (the primary naming scheme)
-    const pathBased = path.join(projectsDir, cwd.replace(/\//g, '-'));
-    if (fs.existsSync(pathBased)) return pathBased;
-
-    // Partial match: last 3 path segments
-    const parts = cwd.split('/').filter((p) => p.length > 0);
-    const suffix = parts.slice(-3).join('-');
-    const dirs = fs.readdirSync(projectsDir);
-    const match = dirs.find((d) => d.endsWith(suffix));
-    if (match) return path.join(projectsDir, match);
-
-    return null;
+    const pathBased = path.join(projectsDir, encodeProjectPath(cwd));
+    return fs.existsSync(pathBased) ? pathBased : null;
   } catch (err) {
-    console.error('[findClaudeProjectDir] Failed to scan projects dir:', err);
+    console.error('[findClaudeProjectDir] Failed to check projects dir:', err);
     return null;
   }
 }
 
-/** Check whether Claude has a session file for the given UUID in this cwd. */
-function hasSessionForId(cwd: string, sessionId: string): boolean {
+/** Check whether Claude has any jsonl history for this cwd. */
+function hasAnySessionForCwd(cwd: string): boolean {
   const projDir = findClaudeProjectDir(cwd);
   if (!projDir) return false;
-  return fs.existsSync(path.join(projDir, `${sessionId}.jsonl`));
+  try {
+    return fs.readdirSync(projDir).some((f) => f.endsWith('.jsonl'));
+  } catch {
+    return false;
+  }
 }
 
 interface PtyRecord {
@@ -82,10 +85,34 @@ const RESERVED_ENV_KEYS = new Set([
 
 export function setCommitAttribution(value: string | undefined): void {
   commitAttributionSetting = value;
-  // Re-write settings.local.json for all active PTYs so the change takes effect immediately
+  refreshActivePtyHooks();
+}
+
+export interface RefreshFailure {
+  settingsPath: string;
+  error: string;
+}
+
+export interface RefreshResult {
+  failures: RefreshFailure[];
+}
+
+/**
+ * Rewrite settings.local.json for every active PTY. Claude Code re-reads
+ * settings per tool call, so this flips hooks live. Returns per-task write
+ * failures so callers (RTK toggle, attribution change) can surface a
+ * "saved, but N tasks didn't pick it up" message instead of silently
+ * returning success.
+ */
+export function refreshActivePtyHooks(): RefreshResult {
+  const failures: RefreshFailure[] = [];
   for (const [id, rec] of ptys) {
-    writeHookSettings(rec.cwd, id);
+    const result = writeHookSettings(rec.cwd, id);
+    if (!result.ok) {
+      failures.push({ settingsPath: result.settingsPath, error: result.error });
+    }
   }
+  return { failures };
 }
 
 export function setDesktopNotification(opts: { enabled: boolean }): void {
@@ -144,10 +171,16 @@ async function findClaudePath(): Promise<string | null> {
     // Best effort
   }
 
-  // 2. Try `which claude` (works when PATH is correct)
+  // 2. Try `which`/`where.exe` (works when PATH is correct)
   try {
-    const { stdout } = await execFileAsync('which', ['claude']);
-    const resolved = stdout.trim();
+    const findCmd = process.platform === 'win32' ? 'where.exe' : 'which';
+    const { stdout } = await execFileAsync(findCmd, ['claude']);
+    // where.exe may return multiple lines; prefer .cmd on Windows
+    const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+    const resolved =
+      process.platform === 'win32'
+        ? (lines.find((l) => l.toLowerCase().endsWith('.cmd')) || lines[0])?.trim()
+        : lines[0]?.trim();
     if (resolved) {
       cachedClaudePath = resolved;
       return cachedClaudePath;
@@ -158,14 +191,27 @@ async function findClaudePath(): Promise<string | null> {
 
   // 3. Direct probe common install locations
   const home = os.homedir();
-  const candidates = [
-    path.join(home, '.local/bin/claude'),
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-  ];
+  const candidates: string[] =
+    process.platform === 'win32'
+      ? [
+          path.join(
+            process.env.APPDATA || path.join(home, 'AppData', 'Roaming'),
+            'npm',
+            'claude.cmd',
+          ),
+          path.join(home, 'AppData', 'Local', 'Programs', 'nodejs', 'claude.cmd'),
+          path.join('C:\\Program Files\\nodejs', 'claude.cmd'),
+          // Version managers: check their env-var-based directories
+          ...(process.env.NVM_SYMLINK ? [path.join(process.env.NVM_SYMLINK, 'claude.cmd')] : []),
+          ...(process.env.VOLTA_HOME
+            ? [path.join(process.env.VOLTA_HOME, 'bin', 'claude.cmd')]
+            : []),
+        ]
+      : [path.join(home, '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'];
   for (const candidate of candidates) {
     try {
-      await fs.promises.access(candidate, fs.constants.X_OK);
+      const accessMode = process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK;
+      await fs.promises.access(candidate, accessMode);
       cachedClaudePath = candidate;
       return cachedClaudePath;
     } catch {
@@ -183,22 +229,57 @@ async function findClaudePath(): Promise<string | null> {
  * When on, inherits the full parent process.env as a base.
  */
 function buildDirectEnv(isDark: boolean): Record<string, string> {
+  const isWin = process.platform === 'win32';
   const base: Record<string, string> = syncShellEnv
     ? Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => !!e[1]))
     : {};
 
+  // rtk's rewrite output invokes the bare name `rtk`; when the binary is
+  // Dash-managed (userData/bin), prepend that dir so the rewrite resolves.
+  const rtkBinDir = RtkService.getManagedBinDirForPath();
+  const pathSep = isWin ? ';' : ':';
+  const basePath = process.env.PATH || '';
+  const mergedPath = rtkBinDir ? prependUnique(rtkBinDir, basePath, pathSep) : basePath;
+
   const env: Record<string, string> = {
     ...base,
-    TERM: 'xterm-256color',
-    COLORTERM: 'truecolor',
     TERM_PROGRAM: 'dash',
     HOME: os.homedir(),
-    USER: os.userInfo().username,
-    PATH: process.env.PATH || '',
+    PATH: mergedPath,
     // Tell CLI apps about terminal background (rxvt convention)
     // Format: "fg;bg" where higher values = lighter colors
     COLORFGBG: isDark ? '15;0' : '0;15',
   };
+
+  if (isWin) {
+    // Windows requires system env vars for DNS, credential storage, and Node.js.
+    // Includes both casings of SystemRoot since some processes look for one or
+    // the other (cmd.exe sets SystemRoot, PowerShell sees SYSTEMROOT in env).
+    env.USERNAME = process.env.USERNAME || os.userInfo().username;
+    const winVars = [
+      'APPDATA',
+      'LOCALAPPDATA',
+      'USERPROFILE',
+      'TEMP',
+      'TMP',
+      'SystemRoot',
+      'SYSTEMROOT',
+      'SystemDrive',
+      'WINDIR',
+      'COMSPEC',
+      'PATHEXT',
+      'COMPUTERNAME',
+      'USERDOMAIN',
+      'ProgramFiles',
+    ];
+    for (const key of winVars) {
+      if (process.env[key]) env[key] = process.env[key]!;
+    }
+  } else {
+    env.TERM = 'xterm-256color';
+    env.COLORTERM = 'truecolor';
+    env.USER = os.userInfo().username;
+  }
 
   if (!syncShellEnv) {
     // Auth passthrough — only needed when not inheriting full env
@@ -247,20 +328,111 @@ function getTaskContextPrompt(taskId: string): string | null {
 }
 
 /**
- * All hook event names that Dash writes to settings.local.json.
- * Used by both writeHookSettings and cleanupHookSettings.
+ * Claude Code rejects an entire settings.local.json if any top-level hook key
+ * is unknown to the running CLI version. Newer hook events must be gated so
+ * older Claude Code installs don't lose ALL Dash hooks (see GH #127).
+ *
+ * Returns false when the version is unknown, which keeps the new keys out of
+ * the file — the safer default. main.ts populates claudeCliCache after the
+ * async --version probe; by the time a PTY spawns, it's almost always set.
  */
-const DASH_HOOK_EVENTS = [
-  'Stop',
-  'UserPromptSubmit',
-  'Notification',
-  'PreToolUse',
-  'PostToolUse',
-  'StopFailure',
-  'PreCompact',
-  'PostCompact',
-  'SessionStart',
-] as const;
+function isClaudeVersionAtLeast(major: number, minor: number, patch: number): boolean {
+  let version: string | null = null;
+  try {
+    // Lazy require to avoid the circular import that a static import of main.ts
+    // would create (main → ptyManager → main). At call time, main is fully loaded.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+    const main = require('../main') as typeof import('../main');
+    version = main.claudeCliCache.version;
+  } catch {
+    return false;
+  }
+  if (!version) return false;
+  const m = version.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return false;
+  const [a, b, c] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (a !== major) return a > major;
+  if (b !== minor) return b > minor;
+  return c >= patch;
+}
+
+/**
+ * Mark a hook as Dash-authored. The brand lets the merge module recognize
+ * it on the next rewrite without falling back to URL/command-shape pattern
+ * matching.
+ */
+function tagDash<T extends HttpHook | CommandHook>(hook: T): T & { __dash: true } {
+  return { ...hook, __dash: true };
+}
+
+/**
+ * Prepend `dir` to a path-like string, but only if it isn't already there
+ * (case-sensitive on Unix, case-sensitive on Windows is wrong but matches
+ * what users actually do). Used when injecting Dash-managed binary
+ * directories into the spawned process's PATH.
+ */
+function prependUnique(dir: string, basePath: string, sep: string): string {
+  if (!basePath) return dir;
+  const parts = basePath.split(sep);
+  if (parts.includes(dir)) return basePath;
+  return `${dir}${sep}${basePath}`;
+}
+
+/**
+ * Build the PreToolUse hook entries. `*` matcher always points at our
+ * tool-start endpoint; when RTK is enabled, also add a `Bash`-matcher
+ * entry that runs RTK's hook command to rewrite verbose Bash output
+ * before Claude consumes it.
+ */
+function buildPreToolUseHooks(
+  httpHook: (endpoint: DashHookEndpoint, async?: boolean) => HttpHook,
+): HookEntry[] {
+  const entries: HookEntry[] = [{ matcher: '*', hooks: [tagDash(httpHook('tool-start', true))] }];
+  const rtkCmd = RtkService.isEnabled() ? RtkService.getHookCommand() : null;
+  if (rtkCmd) {
+    entries.push({ matcher: 'Bash', hooks: [tagDash({ type: 'command', command: rtkCmd })] });
+  }
+  return entries;
+}
+
+/**
+ * Atomic write: stage to a sibling tmp file then rename over the target.
+ * POSIX rename is atomic, so a crash mid-write can never leave a half-
+ * written file at `target`. Important here because settings.local.json is
+ * rewritten frequently (every PTY spawn, every commit-attribution change)
+ * and the corrupt-recovery path on the read side would otherwise have to
+ * handle a wider class of partial-write failures than just user edits.
+ *
+ * On failure (write error mid-data, or rename error after a successful
+ * write), unlink the tmp file best-effort before rethrowing so failed
+ * writes don't accumulate orphan `*.tmp-<pid>-<ts>` files alongside the
+ * user's settings.
+ */
+function atomicWriteFileSync(target: string, data: string): void {
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // best-effort: tmp may not exist if writeFileSync failed before
+      // creating the file, or unlink may race with another process.
+    }
+    throw err;
+  }
+}
+
+function broadcastToast(message: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('app:toast', { message });
+    }
+  }
+}
+
+type HookWriteResult = { ok: true } | { ok: false; settingsPath: string; error: string };
 
 /**
  * Write .claude/settings.local.json with hooks for activity monitoring,
@@ -269,47 +441,75 @@ const DASH_HOOK_EVENTS = [
  * Hooks use type: "http" — Claude Code POSTs the hook JSON body directly
  * to our local HookServer. The statusLine uses type: "command" with curl
  * (http type is not supported for statusLine).
+ *
+ * Merging preserves user-authored entries via the merge module's brand-or-
+ * URL-shape detector, so users can have their own hooks under managed
+ * events without losing them on every rewrite.
+ *
+ * Returns a result so refreshActivePtyHooks can aggregate failures across
+ * tasks; toasts and console.error are still emitted inline regardless.
  */
-function writeHookSettings(cwd: string, ptyId: string): void {
+function writeHookSettings(cwd: string, ptyId: string): HookWriteResult {
   const port = hookServer.port;
-  if (port === 0) return;
-
   const claudeDir = path.join(cwd, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.local.json');
-  const base = `http://127.0.0.1:${port}`;
 
-  /** Shorthand: build an HTTP hook entry. */
-  const httpHook = (endpoint: string, async?: boolean) => ({
+  // The await order in main.ts (`await hookServer.start()` before IPC
+  // registration) makes this branch unreachable in normal startup; if we hit
+  // it, something has invoked writeHookSettings outside the IPC entry path.
+  // Surface it loudly rather than leaving stale on-disk hooks unchanged.
+  if (port === 0) {
+    console.error(
+      '[writeHookSettings] HookServer port not bound — settings.local.json not updated. ' +
+        `Likely a startup-ordering bug (caller invoked before hookServer.start() resolved). cwd=${cwd}`,
+    );
+    broadcastToast(
+      `Hook server not ready — task hooks couldn't be written for ${path.basename(cwd)}. Restart Dash to recover.`,
+    );
+    return { ok: false, settingsPath, error: 'HookServer port not bound' };
+  }
+
+  const base = `http://127.0.0.1:${port}`;
+  const buildHookUrl = (endpoint: DashHookEndpoint) => `${base}/hook/${endpoint}?ptyId=${ptyId}`;
+
+  const httpHook = (endpoint: DashHookEndpoint, async?: boolean): HttpHook => ({
     type: 'http' as const,
-    url: `${base}${endpoint}?ptyId=${ptyId}`,
+    url: buildHookUrl(endpoint),
     ...(async ? { async: true } : {}),
   });
 
-  const hookSettings: Record<string, unknown[]> = {
-    // ── Activity state signals ──────────────────────────────
-    Stop: [{ hooks: [httpHook('/hook/stop')] }],
-    UserPromptSubmit: [{ hooks: [httpHook('/hook/busy')] }],
+  const dashHttp = (endpoint: DashHookEndpoint, async?: boolean) =>
+    tagDash(httpHook(endpoint, async));
 
-    // ── Notification (permission prompt, idle) ──────────────
+  // Typed against DashHookEvent so a typo'd event key (e.g. 'PreToolUze')
+  // fails the build, matching the drift-prevention DashHookEndpoint gives
+  // us for endpoints.
+  const dashEntries: Partial<Record<DashHookEvent, HookEntry[]>> = {
+    Stop: [{ matcher: '', hooks: [dashHttp('stop')] }],
+    UserPromptSubmit: [{ matcher: '', hooks: [dashHttp('busy')] }],
     Notification: [
-      { matcher: 'permission_prompt', hooks: [httpHook('/hook/notification')] },
-      { matcher: 'idle_prompt', hooks: [httpHook('/hook/notification')] },
+      { matcher: 'permission_prompt', hooks: [dashHttp('notification')] },
+      { matcher: 'idle_prompt', hooks: [dashHttp('notification')] },
     ],
-
-    // ── Tool activity tracking ──────────────────────────────
-    PreToolUse: [{ matcher: '*', hooks: [httpHook('/hook/tool-start', true)] }],
-    PostToolUse: [{ matcher: '*', hooks: [httpHook('/hook/tool-end', true)] }],
-
-    // ── Error detection ─────────────────────────────────────
-    StopFailure: [{ matcher: '*', hooks: [httpHook('/hook/stop-failure')] }],
-
-    // ── Context compaction ──────────────────────────────────
-    PreCompact: [{ matcher: '*', hooks: [httpHook('/hook/compact-start', true)] }],
-    PostCompact: [{ matcher: '*', hooks: [httpHook('/hook/compact-end', true)] }],
+    PreToolUse: buildPreToolUseHooks(httpHook),
+    PostToolUse: [{ matcher: '*', hooks: [dashHttp('tool-end', true)] }],
+    PreCompact: [{ matcher: '*', hooks: [dashHttp('compact-start', true)] }],
   };
 
-  // Inject task context via SessionStart hook. Fires on startup (new session),
-  // and re-injects after compact/clear so Claude retains issue awareness.
+  // PostCompact added in Claude Code 2.1.76; older CLIs reject the key and
+  // skip the entire settings file (GH #127), losing all Dash hooks.
+  if (isClaudeVersionAtLeast(2, 1, 76)) {
+    dashEntries.PostCompact = [{ matcher: '*', hooks: [dashHttp('compact-end', true)] }];
+  }
+
+  // StopFailure added in Claude Code 2.1.78.
+  if (isClaudeVersionAtLeast(2, 1, 78)) {
+    dashEntries.StopFailure = [{ matcher: '*', hooks: [dashHttp('stop-failure')] }];
+  }
+
+  // SessionStart hook re-injects task context (linked issue/work-item prompt)
+  // on startup, compact, and clear — NOT resume, since resumed sessions
+  // already have context in history.
   const contextPrompt = getTaskContextPrompt(ptyId);
   if (contextPrompt) {
     const hookPayload = JSON.stringify({
@@ -321,18 +521,16 @@ function writeHookSettings(cwd: string, ptyId: string): void {
     // Use base64 encoding to safely embed user-controlled content in a shell command.
     // Single-quote escaping is fragile with content from GitHub issues / ADO work items.
     const b64 = Buffer.from(hookPayload).toString('base64');
-    const decodeFlag = process.platform === 'darwin' ? '-D' : '-d';
-    const sessionStartHook = {
-      hooks: [
-        {
-          type: 'command',
-          command: `echo '${b64}' | base64 ${decodeFlag}`,
-        },
-      ],
-    };
-    hookSettings.SessionStart = ['startup', 'compact', 'clear'].map((matcher) => ({
+    // Cross-platform decode: macOS uses `base64 -D`, Linux uses `base64 -d`,
+    // Windows cmd.exe doesn't have base64 so we use PowerShell instead.
+    const decodeCmd =
+      process.platform === 'win32'
+        ? `powershell.exe -NoProfile -Command "[Console]::Out.Write([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')))"`
+        : `echo '${b64}' | base64 ${process.platform === 'darwin' ? '-D' : '-d'}`;
+    const contextHook: CommandHook = { type: 'command', command: decodeCmd };
+    dashEntries.SessionStart = ['startup', 'compact', 'clear'].map((matcher) => ({
       matcher,
-      ...sessionStartHook,
+      hooks: [tagDash(contextHook)],
     }));
   }
 
@@ -341,56 +539,89 @@ function writeHookSettings(cwd: string, ptyId: string): void {
       fs.mkdirSync(claudeDir, { recursive: true });
     }
 
-    // Merge with existing settings to preserve non-hook config
     let existing: Record<string, unknown> = {};
     if (fs.existsSync(settingsPath)) {
       try {
-        existing = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as unknown;
+        // JSON.parse succeeds on "null", "42", "[]", etc. Only plain objects
+        // can be spread and merged safely; anything else is treated as corrupt.
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          existing = parsed as Record<string, unknown>;
+        } else {
+          throw new Error(`settings.local.json is not a JSON object (got ${typeof parsed})`);
+        }
       } catch (err) {
-        console.error(
-          '[writeHookSettings] Corrupted settings.local.json at',
-          settingsPath,
-          '— overwriting:',
-          err,
-        );
+        // Back up the corrupt file before overwriting so the user can recover.
+        // If the backup rename fails, we MUST NOT proceed to overwrite — that
+        // would destroy the user's on-disk file with no copy left.
+        const backupPath = `${settingsPath}.corrupt-${Date.now()}.bak`;
+        try {
+          fs.renameSync(settingsPath, backupPath);
+          console.error(
+            `[writeHookSettings] settings.local.json corrupt at ${settingsPath}; backed up to ${backupPath}`,
+            err,
+          );
+          broadcastToast(
+            `settings.local.json was unreadable — backed up to ${path.basename(backupPath)} and rewritten.`,
+          );
+        } catch (renameErr) {
+          console.error(
+            '[writeHookSettings] Failed to back up corrupt file; leaving on-disk file intact:',
+            renameErr,
+          );
+          broadcastToast(
+            `settings.local.json is corrupt and could not be backed up — hooks are off for this task. Fix or remove ${path.basename(settingsPath)} manually.`,
+          );
+          return {
+            ok: false,
+            settingsPath,
+            error: `corrupt settings.local.json; backup rename failed: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`,
+          };
+        }
       }
     }
 
+    const existingHooks =
+      existing.hooks && typeof existing.hooks === 'object'
+        ? (existing.hooks as Record<string, HookEntry[] | undefined>)
+        : {};
+
+    const mergedHooks = mergeHookEntries(existingHooks, dashEntries);
+
     const merged: Record<string, unknown> = {
       ...existing,
-      hooks: {
-        ...(existing.hooks && typeof existing.hooks === 'object'
-          ? (existing.hooks as Record<string, unknown>)
-          : {}),
-        ...hookSettings,
-      },
+      hooks: mergedHooks,
     };
 
-    // statusLine: command that pipes Claude Code's JSON context data to our hook server
-    const contextUrl = `${base}/hook/context?ptyId=${ptyId}`;
+    const contextUrl = buildHookUrl('context');
     merged.statusLine = {
       type: 'command',
       command: `curl -s --connect-timeout 2 -X POST -H "Content-Type: application/json" -d @- "${contextUrl}" >/dev/null 2>&1`,
     };
 
-    // Commit attribution: undefined = Dash default, '' = suppress, other = custom.
     const effectiveAttribution =
       commitAttributionSetting === undefined ? DASH_DEFAULT_ATTRIBUTION : commitAttributionSetting;
     merged.attribution = { commit: effectiveAttribution };
 
-    fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n');
+    atomicWriteFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n');
     writtenSettingsPaths.add(settingsPath);
-    console.error(
-      `[writeHookSettings] Wrote ${settingsPath} (attribution: ${commitAttributionSetting === undefined ? 'default' : commitAttributionSetting || 'none'})`,
-    );
+    return { ok: true };
   } catch (err) {
     console.error('[writeHookSettings] Failed:', err);
+    broadcastToast(`Could not write ${path.basename(settingsPath)} — hooks are off for this task.`);
+    return {
+      ok: false,
+      settingsPath,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
 /**
  * Remove Dash-written hooks and attribution from all settings.local.json files
- * that were written during this session. Called on app quit to prevent stale hooks.
+ * that were written during this session. Preserves user-authored entries
+ * by filtering against the merge module's Dash-owned detector instead of
+ * deleting the entire managed-event keys.
  */
 export function cleanupHookSettings(): void {
   for (const settingsPath of writtenSettingsPaths) {
@@ -402,25 +633,24 @@ export function cleanupHookSettings(): void {
 
       if (hooks && typeof hooks === 'object') {
         for (const key of DASH_HOOK_EVENTS) {
-          delete hooks[key];
+          const entries = hooks[key];
+          if (!Array.isArray(entries)) continue;
+          const userOnly = entries.filter((e) => !entryIsDashOwned(e));
+          if (userOnly.length === 0) delete hooks[key];
+          else hooks[key] = userOnly;
         }
-        // Remove hooks object entirely if empty
         if (Object.keys(hooks).length === 0) {
           delete raw.hooks;
         }
       }
 
-      // Remove Dash statusLine and attribution
       delete raw.statusLine;
       delete raw.attribution;
 
-      // If nothing meaningful remains, delete the file
       if (Object.keys(raw).length === 0) {
         fs.unlinkSync(settingsPath);
-        console.error(`[cleanupHookSettings] Removed empty ${settingsPath}`);
       } else {
-        fs.writeFileSync(settingsPath, JSON.stringify(raw, null, 2) + '\n');
-        console.error(`[cleanupHookSettings] Cleaned hooks from ${settingsPath}`);
+        atomicWriteFileSync(settingsPath, JSON.stringify(raw, null, 2) + '\n');
       }
     } catch (err) {
       console.error(`[cleanupHookSettings] Failed for ${settingsPath}:`, err);
@@ -439,7 +669,6 @@ export async function startDirectPty(options: {
   cols: number;
   rows: number;
   autoApprove?: boolean;
-  resume?: boolean;
   isDark?: boolean;
   sender?: WebContents;
 }): Promise<{
@@ -469,17 +698,18 @@ export async function startDirectPty(options: {
 
   const args: string[] = [];
 
-  // Pin each task to its own Claude session so tasks sharing the same cwd
-  // (e.g. multiple tasks in the main worktree) never resume each other.
-  if (options.resume && hasSessionForId(options.cwd, options.id)) {
-    // Session was created with --session-id; resume it by ID.
-    args.push('-r', options.id);
-  } else if (options.resume) {
-    // Legacy task created before session pinning — fall back to most recent.
-    args.push('-c', '-r');
-  } else {
-    // New session: create with deterministic UUID tied to this task.
-    args.push('--session-id', options.id);
+  // Resume strategy depends on a load-bearing invariant: each task has a
+  // unique cwd. Worktree tasks get their own dir by construction; non-worktree
+  // tasks are capped at one per project (enforced in DatabaseService.saveTask /
+  // restoreTask, with UI gating in TaskModal as a first line). Because cwd is
+  // unique, Claude's own "most recent jsonl in this dir" pick is always the
+  // right session — including across /clear and /compact forks.
+  //
+  // DO NOT relax the one-non-worktree-task cap without reintroducing per-task
+  // session pinning; see git history at 32bcdb6 for the previous implementation
+  // and the issues that drove its removal.
+  if (hasAnySessionForCwd(options.cwd)) {
+    args.push('--continue');
   }
 
   if (options.autoApprove) {
@@ -490,7 +720,11 @@ export async function startDirectPty(options: {
   writeHookSettings(options.cwd, options.id);
 
   const pty = getPty();
-  const proc = pty.spawn(claudePath, args, {
+  // On Windows, .cmd files must be invoked through cmd.exe
+  const spawnFile = process.platform === 'win32' ? 'cmd.exe' : claudePath;
+  const spawnArgs: string[] = process.platform === 'win32' ? ['/c', claudePath, ...args] : args;
+
+  const proc = pty.spawn(spawnFile, spawnArgs, {
     name: 'xterm-256color',
     cols: options.cols,
     rows: options.rows,
@@ -658,22 +892,26 @@ export async function startPty(options: {
 
   const pty = getPty();
 
-  const shell = process.env.SHELL || '/bin/bash';
-  const args = ['-il']; // Login + interactive
+  const isWin = process.platform === 'win32';
+  const shell = isWin ? 'powershell.exe' : process.env.SHELL || '/bin/bash';
+  const args = isWin ? ['-NoLogo'] : ['-il']; // Login + interactive on Unix
 
   // Clean environment for shell
   const env = { ...process.env };
   // Remove Electron packaging artifacts
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_NO_ATTACH_CONSOLE;
-  // Enable macOS zsh OSC 7 cwd reporting (sources /etc/zshrc_Apple_Terminal)
-  if (process.platform === 'darwin') {
-    env.TERM_PROGRAM = 'Apple_Terminal';
-  }
 
-  // Inject custom prompt for zsh via ZDOTDIR
-  if (shell.endsWith('/zsh') || shell === 'zsh') {
-    env.ZDOTDIR = ensureShellConfig();
+  if (!isWin) {
+    // Enable macOS zsh OSC 7 cwd reporting (sources /etc/zshrc_Apple_Terminal)
+    if (process.platform === 'darwin') {
+      env.TERM_PROGRAM = 'Apple_Terminal';
+    }
+
+    // Inject custom prompt for zsh via ZDOTDIR
+    if (shell.endsWith('/zsh') || shell === 'zsh') {
+      env.ZDOTDIR = ensureShellConfig();
+    }
   }
 
   const proc = pty.spawn(shell, args, {

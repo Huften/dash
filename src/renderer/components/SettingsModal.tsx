@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import {
   X,
   Check,
@@ -11,6 +12,8 @@ import {
   Trash2,
   Plus,
   ExternalLink,
+  HelpCircle,
+  FolderOpen,
 } from 'lucide-react';
 import { Tooltip } from './ui/Tooltip';
 import { ToggleSwitch } from './ui/ToggleSwitch';
@@ -29,23 +32,19 @@ import type {
   PixelAgentsStatus,
   PixelAgentsOffice,
   PixelAgentsOfficeStatus,
-  StatusLineData,
   RateLimits,
   UsageThresholds,
+  RtkStatus,
+  RtkDownloadProgress,
+  RtkTestResult,
 } from '../../shared/types';
-import { formatTokens, formatDuration, formatResetTime } from '../../shared/format';
+import { formatResetTime } from '../../shared/format';
 import { UsageBar } from './ui/UsageBar';
 
 const DASH_DEFAULT_ATTRIBUTION =
   '\n\nCo-Authored-By: Claude <noreply@anthropic.com> via Dash <dash@syv.ai>';
 
-type SettingsTab =
-  | 'general'
-  | 'appearance'
-  | 'claude-code'
-  | 'keybindings'
-  | 'usage'
-  | 'pixel-agents';
+type SettingsTab = 'general' | 'appearance' | 'claude-code' | 'keybindings' | 'usage' | 'add-ons';
 
 interface SettingsModalProps {
   initialTab?: string;
@@ -57,8 +56,18 @@ interface SettingsModalProps {
   onNotificationSoundChange: (value: NotificationSound) => void;
   desktopNotification: boolean;
   onDesktopNotificationChange: (value: boolean) => void;
+  autoUpdateEnabled: boolean;
+  onAutoUpdateEnabledChange: (value: boolean) => void;
+  updateNotificationsEnabled: boolean;
+  onUpdateNotificationsEnabledChange: (value: boolean) => void;
+  showRateLimits: boolean;
+  onShowRateLimitsChange: (value: boolean) => void;
   showUsageInline: boolean;
   onShowUsageInlineChange: (value: boolean) => void;
+  showContextUsageOnTaskCards: boolean;
+  onShowContextUsageOnTaskCardsChange: (value: boolean) => void;
+  showStructuredView: boolean;
+  onShowStructuredViewChange: (value: boolean) => void;
   showActiveTasksSection: boolean;
   onShowActiveTasksSectionChange: (value: boolean) => void;
   shellDrawerEnabled: boolean;
@@ -67,8 +76,11 @@ interface SettingsModalProps {
   onShellDrawerPositionChange: (value: 'left' | 'main' | 'right') => void;
   terminalTheme: string;
   onTerminalThemeChange: (id: string) => void;
-  preferredIDE: 'cursor' | 'code' | 'auto';
-  onPreferredIDEChange: (value: 'cursor' | 'code' | 'auto') => void;
+  preferredIDE: string;
+  onPreferredIDEChange: (value: string) => void;
+  availableIDEs: Array<{ id: string; label: string }>;
+  customIDE: { path: string; args: string[] };
+  onCustomIDEChange: (value: { path: string; args: string[] }) => void;
   commitAttribution: string | undefined;
   onCommitAttributionChange: (value: string | undefined) => void;
   effortLevel: string;
@@ -83,8 +95,10 @@ interface SettingsModalProps {
   pixelAgentsConfig: PixelAgentsConfig | null;
   onPixelAgentsConfigChange: (config: PixelAgentsConfig) => void;
   pixelAgentsStatus: PixelAgentsStatus;
-  statusLineData: Record<string, StatusLineData>;
-  taskNames: Record<string, string>;
+  rtkStatus: RtkStatus | null;
+  onRtkEnabledChange: (enabled: boolean) => void;
+  onRtkDownload: () => void;
+  rtkDownloadProgress: RtkDownloadProgress | null;
   latestRateLimits?: RateLimits;
   usageThresholds: UsageThresholds;
   onUsageThresholdsChange: (thresholds: UsageThresholds) => void;
@@ -558,6 +572,7 @@ function ThresholdInput({
         <input
           type="number"
           min={0}
+          max={100}
           step={5}
           value={value ?? ''}
           onChange={(e) => {
@@ -566,8 +581,7 @@ function ThresholdInput({
             onChange(raw === '' || !Number.isFinite(n) || n < 0 ? null : Math.min(100, n));
           }}
           placeholder={placeholder ?? 'Off'}
-          className="w-[72px] px-2 py-1 rounded-md text-[12px] text-right tabular-nums border border-border/40 text-foreground placeholder:text-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/40"
-          style={{ background: 'hsl(var(--surface-2))' }}
+          className="w-[88px] px-3 py-1.5 rounded-md text-[12px] text-right tabular-nums border border-border/60 bg-transparent text-foreground placeholder:text-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
         {suffix && <span className="text-[11px] text-foreground/40">{suffix}</span>}
       </div>
@@ -575,21 +589,84 @@ function ThresholdInput({
   );
 }
 
+function ToggleRow({
+  label,
+  description,
+  tooltip,
+  enabled,
+  onToggle,
+  indent = 0,
+}: {
+  label: string;
+  description?: string;
+  tooltip?: string;
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
+  indent?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(!enabled)}
+      className="flex items-center justify-between w-full gap-3 py-3 pr-4 text-left"
+      style={{ paddingLeft: 16 + indent * 20 }}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[12px] text-foreground">{label}</span>
+          {tooltip && (
+            <Tooltip content={tooltip}>
+              <span
+                className="inline-flex cursor-help text-foreground/40 hover:text-foreground/70"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <HelpCircle size={12} strokeWidth={1.8} />
+              </span>
+            </Tooltip>
+          )}
+        </div>
+        {description && <div className="text-[10px] text-foreground/40 mt-0.5">{description}</div>}
+      </div>
+      <div
+        className={`w-8 h-[18px] rounded-full relative transition-colors duration-150 flex-shrink-0 ${
+          enabled ? 'bg-primary' : 'bg-border'
+        }`}
+      >
+        <div
+          className={`absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white shadow-sm transition-transform duration-150 ${
+            enabled ? 'translate-x-[16px]' : 'translate-x-[2px]'
+          }`}
+        />
+      </div>
+    </button>
+  );
+}
+
 function UsageSection({
-  statusLineData,
-  taskNames,
   latestRateLimits,
   thresholds,
   onThresholdsChange,
+  showRateLimits,
+  onShowRateLimitsChange,
+  showUsageInline,
+  onShowUsageInlineChange,
+  showContextUsageOnTaskCards,
+  onShowContextUsageOnTaskCardsChange,
+  showStructuredView,
+  onShowStructuredViewChange,
 }: {
-  statusLineData: Record<string, StatusLineData>;
-  taskNames: Record<string, string>;
   latestRateLimits?: RateLimits;
   thresholds: UsageThresholds;
   onThresholdsChange: (t: UsageThresholds) => void;
+  showRateLimits: boolean;
+  onShowRateLimitsChange: (value: boolean) => void;
+  showUsageInline: boolean;
+  onShowUsageInlineChange: (value: boolean) => void;
+  showContextUsageOnTaskCards: boolean;
+  onShowContextUsageOnTaskCardsChange: (value: boolean) => void;
+  showStructuredView: boolean;
+  onShowStructuredViewChange: (value: boolean) => void;
 }) {
-  const entries = Object.entries(statusLineData);
-
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Account-wide rate limits */}
@@ -636,57 +713,44 @@ function UsageSection({
         )}
       </div>
 
-      {/* Per-session context usage */}
+      {/* Display */}
       <div>
         <div className="flex items-center gap-2 mb-3">
           <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/60">
-            Sessions
+            Display
           </span>
           <div className="flex-1 h-px bg-border/30" />
         </div>
-
-        {entries.length === 0 ? (
-          <p className="text-[12px] text-foreground/40 py-4 text-center">No active sessions</p>
-        ) : (
-          <div className="space-y-3">
-            {entries.map(([ptyId, sl]) => (
-              <div
-                key={ptyId}
-                className="rounded-xl border border-border/40 p-4 space-y-3"
-                style={{ background: 'hsl(var(--surface-2))' }}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-medium text-foreground/80 truncate">
-                    {taskNames[ptyId] || 'Unknown task'}
-                  </span>
-                  <span className="text-[10px] text-foreground/40 flex-shrink-0">
-                    {sl.model ?? 'Claude'}
-                  </span>
-                </div>
-
-                <UsageBar
-                  label="Context"
-                  percentage={sl.contextUsage.percentage}
-                  detail={`${formatTokens(sl.contextUsage.used)} / ${formatTokens(sl.contextUsage.total)}`}
-                />
-
-                {sl.cost && (
-                  <div className="flex items-center gap-4 pt-1 text-[10px] text-foreground/40">
-                    <span>API: {formatDuration(sl.cost.totalApiDurationMs)}</span>
-                    <span>Wall: {formatDuration(sl.cost.totalDurationMs)}</span>
-                    {(sl.cost.totalLinesAdded > 0 || sl.cost.totalLinesRemoved > 0) && (
-                      <span>
-                        <span className="text-emerald-400">+{sl.cost.totalLinesAdded}</span>
-                        {' / '}
-                        <span className="text-red-400">-{sl.cost.totalLinesRemoved}</span>
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        <div
+          className="rounded-xl border border-border/40 divide-y divide-border/20 overflow-hidden"
+          style={{ background: 'hsl(var(--surface-2))' }}
+        >
+          <ToggleRow
+            label="Show rate limits"
+            description="Display the 5-hour and 7-day account rate limit bars in the right sidebar."
+            enabled={showRateLimits}
+            onToggle={onShowRateLimitsChange}
+          />
+          <ToggleRow
+            label="Show context usage"
+            description="Display the current session's context window usage in the right sidebar."
+            enabled={showUsageInline}
+            onToggle={onShowUsageInlineChange}
+          />
+          <ToggleRow
+            label="Show progress bar on task cards"
+            description="Adds a thin context usage bar under each task in the left sidebar."
+            enabled={showContextUsageOnTaskCards}
+            onToggle={onShowContextUsageOnTaskCardsChange}
+          />
+          <ToggleRow
+            label="Show structured session view"
+            description="Adds a Structured tab to the right panel showing Claude Code's tool calls as cards."
+            tooltip="Reads the active task's Claude Code session file (~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl) and renders each tool execution as a compact card — color-coded by category (read/write/shell/search/agent/web), with status, duration, and per-tool expanded views (diffs for Edit, file content for Write/Read, command + output for Bash). Updates live as the session progresses."
+            enabled={showStructuredView}
+            onToggle={onShowStructuredViewChange}
+          />
+        </div>
       </div>
 
       {/* Threshold Alerts */}
@@ -936,8 +1000,18 @@ export function SettingsModal({
   onNotificationSoundChange,
   desktopNotification,
   onDesktopNotificationChange,
+  autoUpdateEnabled,
+  onAutoUpdateEnabledChange,
+  updateNotificationsEnabled,
+  onUpdateNotificationsEnabledChange,
+  showRateLimits,
+  onShowRateLimitsChange,
   showUsageInline,
   onShowUsageInlineChange,
+  showContextUsageOnTaskCards,
+  onShowContextUsageOnTaskCardsChange,
+  showStructuredView,
+  onShowStructuredViewChange,
   showActiveTasksSection,
   onShowActiveTasksSectionChange,
   shellDrawerEnabled,
@@ -948,6 +1022,9 @@ export function SettingsModal({
   onTerminalThemeChange,
   preferredIDE,
   onPreferredIDEChange,
+  availableIDEs,
+  customIDE,
+  onCustomIDEChange,
   commitAttribution,
   onCommitAttributionChange,
   effortLevel,
@@ -962,8 +1039,10 @@ export function SettingsModal({
   pixelAgentsConfig,
   onPixelAgentsConfigChange,
   pixelAgentsStatus,
-  statusLineData,
-  taskNames,
+  rtkStatus,
+  onRtkEnabledChange,
+  onRtkDownload,
+  rtkDownloadProgress,
   latestRateLimits,
   usageThresholds,
   onUsageThresholdsChange,
@@ -975,7 +1054,7 @@ export function SettingsModal({
     'claude-code',
     'keybindings',
     'usage',
-    'pixel-agents',
+    'add-ons',
   ];
   const [tab, setTab] = useState<SettingsTab>(
     initialTab && validTabs.includes(initialTab as SettingsTab)
@@ -1092,7 +1171,7 @@ export function SettingsModal({
               { id: 'keybindings', label: 'Keybindings' },
               { id: 'claude-code', label: 'Claude' },
               { id: 'usage', label: 'Usage' },
-              { id: 'pixel-agents', label: 'Pixel Agents' },
+              { id: 'add-ons', label: 'Add-ons' },
             ] as const
           ).map((t) => (
             <button
@@ -1105,18 +1184,12 @@ export function SettingsModal({
               }`}
             >
               {t.label}
-              {t.id === 'pixel-agents' && (
-                <>
-                  {Object.values(pixelAgentsStatus.offices).some(
-                    (s) => s === 'connected' || s === 'registered',
-                  ) && (
-                    <span className="ml-1.5 w-2 h-2 rounded-full bg-[hsl(var(--git-added))] inline-block" />
-                  )}
-                  <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-primary/15 text-primary leading-none">
-                    Experimental
-                  </span>
-                </>
-              )}
+              {t.id === 'add-ons' &&
+                Object.values(pixelAgentsStatus.offices).some(
+                  (s) => s === 'connected' || s === 'registered',
+                ) && (
+                  <span className="ml-1.5 w-2 h-2 rounded-full bg-[hsl(var(--git-added))] inline-block" />
+                )}
             </button>
           ))}
         </div>
@@ -1197,22 +1270,6 @@ export function SettingsModal({
                 </p>
               </div>
 
-              {/* Inline Usage */}
-              <div>
-                <label className="block text-[12px] font-medium text-foreground mb-3">
-                  Inline Usage
-                </label>
-                <ToggleSwitch
-                  enabled={showUsageInline}
-                  onToggle={onShowUsageInlineChange}
-                  label="Show context usage in sidebar and header"
-                />
-                <p className="text-[10px] text-foreground/80 mt-2">
-                  Display context window percentage and progress bars next to tasks. Detailed stats
-                  are always available in the Usage tab.
-                </p>
-              </div>
-
               {/* Active Tasks Section */}
               <div>
                 <label className="block text-[12px] font-medium text-foreground mb-3">
@@ -1270,18 +1327,17 @@ export function SettingsModal({
                   Preferred IDE
                 </label>
                 <div className="grid grid-cols-3 gap-2">
-                  {(
-                    [
-                      { value: 'auto' as const, label: 'Auto-detect' },
-                      { value: 'cursor' as const, label: 'Cursor' },
-                      { value: 'code' as const, label: 'VS Code' },
-                    ] as const
-                  ).map(({ value, label }) => {
-                    const isActive = preferredIDE === value;
+                  {[
+                    ...(availableIDEs.length > 0
+                      ? [{ id: 'auto', label: 'Auto-detect' }, ...availableIDEs]
+                      : []),
+                    { id: 'custom', label: 'Custom' },
+                  ].map(({ id, label }) => {
+                    const isActive = preferredIDE === id;
                     return (
                       <button
-                        key={value}
-                        onClick={() => onPreferredIDEChange(value)}
+                        key={id}
+                        onClick={() => onPreferredIDEChange(id)}
                         className={`px-3 py-2.5 rounded-lg text-[12px] border transition-all duration-150 ${
                           isActive
                             ? 'border-primary/40 bg-primary/8 text-foreground ring-1 ring-primary/20 font-medium'
@@ -1293,9 +1349,84 @@ export function SettingsModal({
                     );
                   })}
                 </div>
+                {availableIDEs.length === 0 && (
+                  <p className="text-[11px] text-foreground/70 mt-2">
+                    No supported IDE auto-detected. Install Cursor, VS Code, Windsurf, Antigravity,
+                    or Zed — or configure a Custom IDE below.
+                  </p>
+                )}
                 <p className="text-[10px] text-foreground/80 mt-2">
-                  IDE used when opening a task from the header
+                  IDE used when opening a task from the header. Only installed IDEs are shown.
                 </p>
+
+                {preferredIDE === 'custom' && (
+                  <div className="mt-4 space-y-3 p-3 rounded-lg border border-border/40 bg-accent/20">
+                    <Tooltip content="Launch any editor Dash doesn't detect natively. Point at an executable and pass flags — use {path} to place the folder anywhere in the command, or it's appended at the end.">
+                      <div className="inline-flex items-center gap-1.5 cursor-help">
+                        <span className="text-[11px] font-medium text-foreground">
+                          Custom IDE command
+                        </span>
+                        <HelpCircle size={12} strokeWidth={1.8} className="text-foreground/60" />
+                      </div>
+                    </Tooltip>
+
+                    <div>
+                      <label className="block text-[10px] text-foreground/70 mb-1">
+                        Executable path
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={customIDE.path}
+                          onChange={(e) =>
+                            onCustomIDEChange({ ...customIDE, path: e.target.value })
+                          }
+                          placeholder="/Applications/MyIDE.app/Contents/MacOS/myide"
+                          className="flex-1 px-2.5 py-1.5 text-[11px] rounded-md border border-border/60 bg-background text-foreground placeholder:text-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/40"
+                        />
+                        <button
+                          onClick={async () => {
+                            const res = await window.electronAPI.pickExecutable();
+                            if (!res.success) {
+                              toast.error(res.error || 'Failed to open file picker');
+                              return;
+                            }
+                            if (res.data) {
+                              onCustomIDEChange({ ...customIDE, path: res.data });
+                            }
+                          }}
+                          className="px-2.5 py-1.5 text-[11px] rounded-md border border-border/60 text-foreground/80 hover:bg-accent/40 hover:text-foreground flex items-center gap-1"
+                        >
+                          <FolderOpen size={12} strokeWidth={1.8} />
+                          Browse
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-foreground/70 mb-1">
+                        Arguments (optional, one per line)
+                      </label>
+                      <textarea
+                        value={customIDE.args.join('\n')}
+                        onChange={(e) =>
+                          onCustomIDEChange({
+                            ...customIDE,
+                            args: e.target.value.split('\n').filter((line) => line.length > 0),
+                          })
+                        }
+                        rows={3}
+                        placeholder={'--new-window\n{path}'}
+                        className="w-full px-2.5 py-1.5 text-[11px] rounded-md border border-border/60 bg-background text-foreground placeholder:text-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/40 font-mono resize-y"
+                      />
+                      <p className="text-[10px] text-foreground/60 mt-1">
+                        One argument per line — spaces inside a line are preserved. Use{' '}
+                        <code>{'{path}'}</code> to place the folder anywhere; otherwise it's
+                        appended at the end.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Commit Attribution */}
@@ -1363,6 +1494,25 @@ export function SettingsModal({
                 <label className="block text-[12px] font-medium text-foreground mb-3">
                   Updates
                 </label>
+                <div className="space-y-3 mb-4">
+                  <ToggleSwitch
+                    enabled={autoUpdateEnabled}
+                    onToggle={onAutoUpdateEnabledChange}
+                    label="Check for updates automatically"
+                  />
+                  <p className="text-[10px] text-foreground/80 -mt-1">
+                    When off, Dash won't check for updates in the background. You can still check
+                    manually below.
+                  </p>
+                  <ToggleSwitch
+                    enabled={updateNotificationsEnabled}
+                    onToggle={onUpdateNotificationsEnabledChange}
+                    label="Show update notifications"
+                  />
+                  <p className="text-[10px] text-foreground/80 -mt-1">
+                    Toast popups when an update is available, downloaded, or fails.
+                  </p>
+                </div>
                 <div className="flex items-center gap-3">
                   <p className="text-[13px] text-foreground/80 font-mono">{appVersion || '...'}</p>
                   {updateStatus === 'ready' ? (
@@ -1574,23 +1724,39 @@ export function SettingsModal({
             />
           )}
 
-          {tab === 'pixel-agents' && (
-            <div className="space-y-6 animate-fade-in">
-              <PixelAgentsSection
-                config={pixelAgentsConfig}
-                onChange={onPixelAgentsConfigChange}
-                status={pixelAgentsStatus}
-              />
+          {tab === 'add-ons' && (
+            <div className="space-y-8 animate-fade-in">
+              <AddOnSection title="RTK">
+                <RtkSection
+                  status={rtkStatus}
+                  onEnabledChange={onRtkEnabledChange}
+                  onDownload={onRtkDownload}
+                  progress={rtkDownloadProgress}
+                />
+              </AddOnSection>
+              <AddOnSection title="Pixel Agents">
+                <PixelAgentsSection
+                  config={pixelAgentsConfig}
+                  onChange={onPixelAgentsConfigChange}
+                  status={pixelAgentsStatus}
+                />
+              </AddOnSection>
             </div>
           )}
 
           {tab === 'usage' && (
             <UsageSection
-              statusLineData={statusLineData}
-              taskNames={taskNames}
               latestRateLimits={latestRateLimits}
               thresholds={usageThresholds}
               onThresholdsChange={onUsageThresholdsChange}
+              showRateLimits={showRateLimits}
+              onShowRateLimitsChange={onShowRateLimitsChange}
+              showUsageInline={showUsageInline}
+              onShowUsageInlineChange={onShowUsageInlineChange}
+              showContextUsageOnTaskCards={showContextUsageOnTaskCards}
+              onShowContextUsageOnTaskCardsChange={onShowContextUsageOnTaskCardsChange}
+              showStructuredView={showStructuredView}
+              onShowStructuredViewChange={onShowStructuredViewChange}
             />
           )}
 
@@ -1705,6 +1871,408 @@ export function SettingsModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function RtkStatusCardBody({ status }: { status: RtkStatus | null }) {
+  if (!status) {
+    return <p className="text-[11px] text-foreground/60">Checking…</p>;
+  }
+  if (status.installed) {
+    return (
+      <div className="space-y-0.5">
+        <p className="text-[11px] text-foreground/60 font-mono">
+          {status.version}
+          <span className="ml-2 text-foreground/40">
+            ({status.source === 'managed' ? 'managed by Dash' : 'on $PATH'})
+          </span>
+        </p>
+        <p className="text-[11px] text-foreground/40 font-mono truncate">{status.path}</p>
+      </div>
+    );
+  }
+  if (status.downloadable) {
+    return (
+      <p className="text-[11px] text-foreground/60 leading-relaxed">
+        Not installed. Dash can fetch the latest release directly — no sudo, no global $PATH
+        changes, binary stays scoped to this app.
+      </p>
+    );
+  }
+  return (
+    <p className="text-[11px] text-foreground/60 leading-relaxed">
+      Not installed, and no prebuilt release is available for this platform. Install manually from{' '}
+      <a
+        href="https://github.com/rtk-ai/rtk"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary hover:underline"
+      >
+        github.com/rtk-ai/rtk
+      </a>
+      .
+    </p>
+  );
+}
+
+function labelForProgress(progress: RtkDownloadProgress | null): {
+  installing: boolean;
+  installLabel: string;
+} {
+  if (!progress) return { installing: false, installLabel: 'Install RTK' };
+  switch (progress.phase) {
+    case 'downloading':
+      return { installing: true, installLabel: `Downloading… ${progress.percent}%` };
+    case 'verifying':
+      return { installing: true, installLabel: 'Verifying…' };
+    case 'extracting':
+      return { installing: true, installLabel: 'Extracting…' };
+    case 'done':
+    case 'error':
+      return { installing: false, installLabel: 'Install RTK' };
+    default: {
+      const _exhaustive: never = progress;
+      void _exhaustive;
+      return { installing: false, installLabel: 'Install RTK' };
+    }
+  }
+}
+
+function AddOnSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-foreground/60">
+          {title}
+        </span>
+        <div className="flex-1 h-px bg-border/30" />
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function RtkSection({
+  status,
+  onEnabledChange,
+  onDownload,
+  progress,
+}: {
+  status: RtkStatus | null;
+  onEnabledChange: (enabled: boolean) => void;
+  onDownload: () => void;
+  progress: RtkDownloadProgress | null;
+}) {
+  const loading = !status;
+
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<RtkTestResult | null>(null);
+
+  async function runTest() {
+    setTesting(true);
+    setTestResult(null);
+    const resp = await window.electronAPI.rtkTest();
+    setTesting(false);
+    if (resp.success && resp.data) {
+      setTestResult(resp.data);
+    } else {
+      setTestResult({ ok: false, error: resp.error ?? 'unknown IPC error' });
+    }
+  }
+
+  const { installing, installLabel } = labelForProgress(progress);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <p className="text-[11px] text-foreground/60 leading-relaxed">
+          RTK compresses common shell-command output (git, ls, test runners, tsc…) before Claude
+          sees it, typically cutting <b>60–90% of tokens</b> per command. When enabled, Dash injects
+          RTK&rsquo;s PreToolUse hook into every task automatically.{' '}
+          <a
+            href="https://github.com/rtk-ai/rtk"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-0.5 text-primary hover:underline"
+          >
+            Learn more
+            <ExternalLink size={9} strokeWidth={1.8} />
+          </a>
+        </p>
+      </div>
+
+      {/* Install status card */}
+      <div
+        className="flex items-start gap-3.5 p-4 rounded-xl border border-border/40"
+        style={{ background: 'hsl(var(--surface-2))' }}
+      >
+        <div
+          className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+            status?.installed
+              ? 'bg-[hsl(var(--git-added)/0.12)]'
+              : 'bg-[hsl(var(--git-modified)/0.12)]'
+          }`}
+        >
+          {status?.installed ? (
+            <Check size={14} className="text-[hsl(var(--git-added))]" strokeWidth={1.8} />
+          ) : (
+            <AlertCircle size={14} className="text-[hsl(var(--git-modified))]" strokeWidth={1.8} />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <RtkStatusCardBody status={status} />
+        </div>
+      </div>
+
+      {/* Install button (only when not installed and platform is supported) */}
+      {!loading && !status?.installed && status?.downloadable && (
+        <div>
+          <button
+            onClick={onDownload}
+            disabled={installing}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] border border-primary/40 bg-primary/8 text-foreground hover:bg-primary/12 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Download size={12} strokeWidth={1.8} />
+            {installLabel}
+          </button>
+          {progress?.phase === 'error' && (
+            <p className="text-[11px] text-destructive mt-2">{progress.error}</p>
+          )}
+          {progress?.phase === 'done' && (
+            <p className="text-[11px] text-[hsl(var(--git-added))] mt-2">
+              Installed {progress.version ?? ''} — you can enable it below.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Enable toggle (requires install) */}
+      <div>
+        <label className="block text-[12px] font-medium text-foreground mb-3">
+          Inject RTK hook in tasks
+        </label>
+        <ToggleSwitch
+          enabled={status?.installed ? status.enabled : false}
+          onToggle={onEnabledChange}
+          disabled={!status?.installed}
+          label="Compress Bash output via rtk before Claude reads it"
+        />
+        <p className="text-[10px] text-foreground/80 mt-2">
+          Takes effect on the next command in every running task — no restart needed. Dash writes
+          the hook into each task&rsquo;s local settings; your global{' '}
+          <code className="px-1 py-0.5 rounded bg-accent/60 text-[9px] font-mono">
+            ~/.claude/settings.json
+          </code>{' '}
+          is not modified. Do not also run{' '}
+          <code className="px-1 py-0.5 rounded bg-accent/60 text-[9px] font-mono">rtk init -g</code>{' '}
+          or the hook will run twice.
+        </p>
+      </div>
+
+      {/* In-process verification — runs `rtk hook claude` against a synthetic
+          `ls -la /tmp` payload and renders the rewrite it would emit. */}
+      {status?.installed && (
+        <div>
+          <label className="block text-[12px] font-medium text-foreground mb-3">Verify</label>
+          <button
+            onClick={runTest}
+            disabled={testing}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] border border-border/60 text-foreground/80 hover:bg-accent/40 hover:text-foreground transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {testing ? 'Testing…' : 'Test RTK'}
+          </button>
+          <p className="text-[10px] text-foreground/80 mt-2">
+            Pipes a synthetic{' '}
+            <code className="px-1 py-0.5 rounded bg-accent/60 text-[9px] font-mono">
+              git status
+            </code>{' '}
+            through the same rtk binary Dash hands to Claude. Green means rtk rewrote the command —
+            that&rsquo;s the compression path firing.
+          </p>
+
+          {testResult && <RtkTestResultCard result={testResult} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RtkTestResultCard({ result }: { result: RtkTestResult }) {
+  if (!result.ok) {
+    return (
+      <div
+        className="mt-3 flex items-start gap-3 p-3 rounded-lg border border-destructive/40"
+        style={{ background: 'hsl(var(--destructive) / 0.06)' }}
+      >
+        <AlertCircle size={14} className="text-destructive mt-0.5" strokeWidth={1.8} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-medium text-destructive">Test failed</p>
+          <p className="text-[11px] text-foreground/70 font-mono mt-1 break-all">{result.error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  switch (result.outcome.kind) {
+    case 'blocked':
+      return (
+        <div
+          className="mt-3 flex items-start gap-3 p-3 rounded-lg border border-[hsl(var(--git-modified))]/40"
+          style={{ background: 'hsl(var(--git-modified) / 0.06)' }}
+        >
+          <AlertCircle
+            size={14}
+            className="text-[hsl(var(--git-modified))] mt-0.5"
+            strokeWidth={1.8}
+          />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-[11px] font-medium text-foreground">
+              rtk blocked this command (exit 2).
+            </p>
+            {result.outcome.stderr && (
+              <p className="text-[11px] text-foreground/70 font-mono break-all">
+                {result.outcome.stderr}
+              </p>
+            )}
+          </div>
+        </div>
+      );
+
+    case 'rewritten': {
+      const diff = result.outcome.execDiff;
+      const okDiff = diff && diff.kind === 'ok' ? diff : null;
+      const failedDiff = diff && diff.kind === 'failed' ? diff : null;
+      const savedBytes = okDiff ? okDiff.rawBytes - okDiff.compressedBytes : 0;
+      const savedPct =
+        okDiff && okDiff.rawBytes > 0 ? Math.round((savedBytes / okDiff.rawBytes) * 100) : 0;
+
+      return (
+        <div
+          className="mt-3 p-3 rounded-lg border border-[hsl(var(--git-added))]/40 space-y-3"
+          style={{ background: 'hsl(var(--git-added) / 0.06)' }}
+        >
+          <div className="flex items-start gap-3">
+            <Check size={14} className="text-[hsl(var(--git-added))] mt-0.5" strokeWidth={1.8} />
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="text-[11px] font-medium text-foreground">
+                Compression active — rtk would rewrite this command.
+              </p>
+              <div className="text-[11px] text-foreground/70 font-mono space-y-0.5">
+                <div>
+                  <span className="text-foreground/40">in: </span>
+                  {result.testedCommand}
+                </div>
+                <div>
+                  <span className="text-foreground/40">out:</span> {result.outcome.rewrittenCommand}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {okDiff && (
+            <div className="space-y-2 pt-2 border-t border-border/40">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-foreground/60">
+                  Actual output diff
+                </span>
+                {okDiff.rawBytes > 0 && (
+                  <span className="text-[10px] font-mono text-[hsl(var(--git-added))]">
+                    {okDiff.rawBytes} → {okDiff.compressedBytes} bytes
+                    {savedBytes > 0 && ` (−${savedPct}%)`}
+                    {okDiff.truncated && ' · truncated'}
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <OutputPanel label="raw" body={okDiff.rawStdout} />
+                <OutputPanel label="via rtk" body={okDiff.compressedStdout} accented />
+              </div>
+            </div>
+          )}
+
+          {failedDiff && (
+            <div
+              className="space-y-1 pt-2 border-t border-border/40"
+              style={{ borderColor: 'hsl(var(--git-modified) / 0.3)' }}
+            >
+              <span className="text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--git-modified))]">
+                Couldn&rsquo;t capture diff
+              </span>
+              <p className="text-[11px] text-foreground/70">{failedDiff.reason}</p>
+              {failedDiff.stderr && (
+                <pre className="text-[10px] text-foreground/50 font-mono whitespace-pre-wrap break-words">
+                  {failedDiff.stderr}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    case 'pass-through':
+      return (
+        <div
+          className="mt-3 flex items-start gap-3 p-3 rounded-lg border border-border/40"
+          style={{ background: 'hsl(var(--surface-2))' }}
+        >
+          <AlertCircle
+            size={14}
+            className="text-[hsl(var(--git-modified))] mt-0.5"
+            strokeWidth={1.8}
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-medium text-foreground">
+              rtk ran without crashing, but chose not to rewrite this command.
+            </p>
+            <p className="text-[10px] text-foreground/60 mt-1">
+              That&rsquo;s valid — rtk only compresses commands in its rewrite list. The hook
+              plumbing is working; it would compress commands like{' '}
+              <code className="text-foreground/80">git status</code> or{' '}
+              <code className="text-foreground/80">cargo test</code> during real use.
+            </p>
+          </div>
+        </div>
+      );
+
+    default: {
+      const _exhaustive: never = result.outcome;
+      void _exhaustive;
+      return null;
+    }
+  }
+}
+
+function OutputPanel({
+  label,
+  body,
+  accented,
+}: {
+  label: string;
+  body: string;
+  accented?: boolean;
+}) {
+  const displayBody = body.trim().length > 0 ? body : '(empty)';
+  return (
+    <div
+      className={`rounded-md border text-[10px] font-mono leading-[1.35] overflow-hidden ${
+        accented ? 'border-[hsl(var(--git-added))]/40' : 'border-border/50'
+      }`}
+      style={{ background: 'hsl(var(--surface-1))' }}
+    >
+      <div
+        className={`px-2 py-1 text-[9px] font-sans uppercase tracking-wide ${
+          accented
+            ? 'text-[hsl(var(--git-added))] bg-[hsl(var(--git-added))]/5'
+            : 'text-foreground/50 bg-[hsl(var(--surface-2))]'
+        }`}
+      >
+        {label}
+      </div>
+      <pre className="px-2 py-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words text-foreground/80">
+        {displayBody}
+      </pre>
     </div>
   );
 }

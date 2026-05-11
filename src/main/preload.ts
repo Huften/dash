@@ -8,11 +8,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dialogs
   showOpenDialog: () => ipcRenderer.invoke('app:showOpenDialog'),
   openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
+  clipboardWriteText: (text: string) => ipcRenderer.send('app:clipboardWriteText', text),
+  clipboardReadText: () => ipcRenderer.invoke('app:clipboardReadText'),
   openInEditor: (args: { cwd: string; filePath: string; line?: number; col?: number }) =>
     ipcRenderer.invoke('app:openInEditor', args),
-  openInIDE: (args: { folderPath: string; ide?: 'cursor' | 'code' }) =>
-    ipcRenderer.invoke('app:openInIDE', args),
+  openInIDE: (args: {
+    folderPath: string;
+    ide?: string;
+    customCommand?: { path: string; args: string[] };
+  }) => ipcRenderer.invoke('app:openInIDE', args),
   detectAvailableIDEs: () => ipcRenderer.invoke('app:detectAvailableIDEs'),
+  pickExecutable: () => ipcRenderer.invoke('app:pickExecutable'),
 
   // Database - Projects
   getProjects: () => ipcRenderer.invoke('db:getProjects'),
@@ -37,6 +43,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   worktreeCreate: (args: unknown) => ipcRenderer.invoke('worktree:create', args),
   worktreeRemove: (args: unknown) => ipcRenderer.invoke('worktree:remove', args),
   worktreeClaimReserve: (args: unknown) => ipcRenderer.invoke('worktree:claimReserve', args),
+  worktreeCreateFromExisting: (args: unknown) =>
+    ipcRenderer.invoke('worktree:createFromExisting', args),
   worktreeEnsureReserve: (args: unknown) => ipcRenderer.invoke('worktree:ensureReserve', args),
   worktreeHasReserve: (projectId: string) => ipcRenderer.invoke('worktree:hasReserve', projectId),
 
@@ -112,9 +120,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ptySaveSnapshot: (id: string, payload: unknown) =>
     ipcRenderer.send('pty:snapshot:save', id, payload),
   ptyClearSnapshot: (id: string) => ipcRenderer.invoke('pty:snapshot:clear', id),
-
-  // Session detection
-  ptyHasClaudeSession: (cwd: string) => ipcRenderer.invoke('pty:hasClaudeSession', cwd),
 
   // Task context for SessionStart hook
   ptyWriteTaskContext: (args: { taskId: string; prompt: string }) =>
@@ -209,6 +214,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   gitRemoteBranchExists: (args: { cwd: string; branch: string }) =>
     ipcRenderer.invoke('git:remoteBranchExists', args),
 
+  gitCheckoutBranch: (args: { cwd: string; branch: string }) =>
+    ipcRenderer.invoke('git:checkoutBranch', args),
+
   // Branch listing
   gitListBranches: (cwd: string) => ipcRenderer.invoke('git:listBranches', cwd),
 
@@ -243,6 +251,60 @@ contextBridge.exposeInMainWorld('electronAPI', {
     };
   },
 
+  // RTK (Rust Token Killer)
+  rtkGetStatus: () => ipcRenderer.invoke('rtk:getStatus'),
+  rtkSetEnabled: (enabled: boolean) => ipcRenderer.invoke('rtk:setEnabled', enabled),
+  rtkDownload: () => ipcRenderer.invoke('rtk:download'),
+  rtkTest: () => ipcRenderer.invoke('rtk:test'),
+  onRtkDownloadProgress: (
+    callback: (progress: import('@shared/types').RtkDownloadProgress) => void,
+  ) => {
+    const handler = (_event: unknown, progress: import('@shared/types').RtkDownloadProgress) =>
+      callback(progress);
+    ipcRenderer.on('rtk:downloadProgress', handler);
+    return () => {
+      ipcRenderer.removeListener('rtk:downloadProgress', handler);
+    };
+  },
+
+  // Skills
+  skillsRefresh: (args?: { force?: boolean }) => ipcRenderer.invoke('skills:refresh', args),
+  skillsGetMeta: () => ipcRenderer.invoke('skills:getMeta'),
+  skillsGetCategories: () => ipcRenderer.invoke('skills:getCategories'),
+  skillsSearch: (args: import('@shared/types').SkillsSearchArgs) =>
+    ipcRenderer.invoke('skills:search', args),
+  skillsGetContent: (args: import('@shared/types').SkillRef) =>
+    ipcRenderer.invoke('skills:getContent', args),
+  skillsReadLocalSkillMd: (args: {
+    skillName: string;
+    target: import('@shared/types').SkillInstallTarget;
+  }) => ipcRenderer.invoke('skills:readLocalSkillMd', args),
+  skillsInstall: (args: import('@shared/types').SkillInstallArgs) =>
+    ipcRenderer.invoke('skills:install', args),
+  skillsCheckInstalled: (args: {
+    skillName: string;
+    probePaths: string[];
+    ref?: import('@shared/types').SkillRef | null;
+  }) => ipcRenderer.invoke('skills:checkInstalled', args),
+  skillsListInstalled: (args: { probePaths: string[] }) =>
+    ipcRenderer.invoke('skills:listInstalled', args),
+  skillsUninstall: (args: import('@shared/types').SkillUninstallArgs) =>
+    ipcRenderer.invoke('skills:uninstall', args),
+  skillsResetCache: () => ipcRenderer.invoke('skills:resetCache'),
+
+  // Session (structured view)
+  sessionWatch: (args: { taskId: string; taskPath: string }) =>
+    ipcRenderer.invoke('session:watch', args),
+  sessionUnwatch: (taskId: string) => ipcRenderer.invoke('session:unwatch', taskId),
+  sessionGetMessages: (taskId: string) => ipcRenderer.invoke('session:getMessages', taskId),
+  onSessionUpdate: (callback: (data: unknown) => void) => {
+    const handler = (_event: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('session:update', handler);
+    return () => {
+      ipcRenderer.removeListener('session:update', handler);
+    };
+  },
+
   // Telemetry
   telemetryCapture: (event: string, properties?: Record<string, unknown>) =>
     ipcRenderer.invoke('telemetry:capture', { event, properties }),
@@ -253,6 +315,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   autoUpdateCheck: () => ipcRenderer.invoke('autoUpdate:check'),
   autoUpdateDownload: () => ipcRenderer.invoke('autoUpdate:download'),
   autoUpdateQuitAndInstall: () => ipcRenderer.invoke('autoUpdate:quitAndInstall'),
+  autoUpdateGetEnabled: () => ipcRenderer.invoke('autoUpdate:getEnabled'),
+  autoUpdateSetEnabled: (enabled: boolean) => ipcRenderer.invoke('autoUpdate:setEnabled', enabled),
   onAutoUpdateAvailable: (callback: (info: { version: string }) => void) => {
     const handler = (_event: unknown, info: { version: string }) => callback(info);
     ipcRenderer.on('autoUpdate:available', handler);

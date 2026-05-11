@@ -1,4 +1,4 @@
-import { ipcMain, dialog, app, shell, BrowserWindow, Notification } from 'electron';
+import { ipcMain, dialog, app, shell, BrowserWindow, Notification, clipboard } from 'electron';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync } from 'fs';
@@ -6,6 +6,115 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 
 const execFileAsync = promisify(execFile);
+
+const FIND_CMD = process.platform === 'win32' ? 'where.exe' : 'which';
+
+// ── IDE registry ──────────────────────────────────────────────
+// Ordered by auto-detect preference. Launching via the CLI bundled inside the
+// .app avoids relying on the user having run VS Code's "Install 'code' command
+// in PATH" (or equivalents), which is the #1 reason "Open in IDE" silently fails.
+interface IdeRegistryEntry {
+  id: string;
+  label: string;
+  macAppNames: string[]; // .app bundle basenames to look for
+  macCliInBundle: string; // path to CLI inside the .app bundle
+  linuxCommand: string; // command expected on PATH on Linux/Windows
+  newWindowArgs: string[];
+}
+
+const IDE_REGISTRY: IdeRegistryEntry[] = [
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    macAppNames: ['Cursor.app'],
+    macCliInBundle: 'Contents/Resources/app/bin/cursor',
+    linuxCommand: 'cursor',
+    newWindowArgs: ['--new-window'],
+  },
+  {
+    id: 'vscode',
+    label: 'VS Code',
+    macAppNames: ['Visual Studio Code.app', 'Visual Studio Code - Insiders.app'],
+    macCliInBundle: 'Contents/Resources/app/bin/code',
+    linuxCommand: 'code',
+    newWindowArgs: ['--new-window'],
+  },
+  {
+    id: 'windsurf',
+    label: 'Windsurf',
+    macAppNames: ['Windsurf.app'],
+    macCliInBundle: 'Contents/Resources/app/bin/windsurf',
+    linuxCommand: 'windsurf',
+    newWindowArgs: ['--new-window'],
+  },
+  {
+    id: 'antigravity',
+    label: 'Antigravity',
+    macAppNames: ['Antigravity.app'],
+    macCliInBundle: 'Contents/Resources/app/bin/antigravity',
+    linuxCommand: 'antigravity',
+    newWindowArgs: ['--new-window'],
+  },
+  {
+    id: 'zed',
+    label: 'Zed',
+    macAppNames: ['Zed.app', 'Zed Preview.app'],
+    macCliInBundle: 'Contents/MacOS/cli',
+    linuxCommand: 'zed',
+    newWindowArgs: ['--new'],
+  },
+];
+
+interface DetectedIde {
+  id: string;
+  label: string;
+  launcher: string;
+  newWindowArgs: string[];
+}
+
+async function detectIdes(): Promise<DetectedIde[]> {
+  // No caching: detection is cheap (parallelized existsSync on macOS, parallel
+  // `which`/`where.exe` on Linux/Windows) and skipping the cache means
+  // install/uninstall changes take effect immediately without an app restart.
+  const appSearchRoots =
+    process.platform === 'darwin' ? ['/Applications', join(homedir(), 'Applications')] : [];
+
+  const launchers = await Promise.all(
+    IDE_REGISTRY.map(async (entry): Promise<string | null> => {
+      if (process.platform === 'darwin') {
+        for (const root of appSearchRoots) {
+          for (const appName of entry.macAppNames) {
+            const candidate = join(root, appName, entry.macCliInBundle);
+            if (existsSync(candidate)) return candidate;
+          }
+        }
+        return null;
+      }
+      // Linux and Windows: probe PATH via `which` / `where.exe`
+      try {
+        const { stdout } = await execFileAsync(FIND_CMD, [entry.linuxCommand]);
+        return stdout.trim().split(/\r?\n/)[0] || null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  const results: DetectedIde[] = [];
+  IDE_REGISTRY.forEach((entry, i) => {
+    const launcher = launchers[i];
+    if (launcher) {
+      results.push({
+        id: entry.id,
+        label: entry.label,
+        launcher,
+        newWindowArgs: entry.newWindowArgs,
+      });
+    }
+  });
+
+  return results;
+}
 
 let cachedEditor: string | null = null;
 
@@ -24,7 +133,7 @@ async function detectEditor(): Promise<string> {
   // Probe for known editors
   for (const editor of ['cursor', 'code', 'zed']) {
     try {
-      await execFileAsync('which', [editor]);
+      await execFileAsync(FIND_CMD, [editor]);
       cachedEditor = editor;
       return editor;
     } catch {
@@ -33,7 +142,13 @@ async function detectEditor(): Promise<string> {
   }
 
   // Fallback to system opener
-  cachedEditor = process.platform === 'darwin' ? 'open' : 'xdg-open';
+  if (process.platform === 'darwin') {
+    cachedEditor = 'open';
+  } else if (process.platform === 'win32') {
+    cachedEditor = 'start';
+  } else {
+    cachedEditor = 'xdg-open';
+  }
   return cachedEditor;
 }
 
@@ -44,6 +159,16 @@ export function registerAppIpc(): void {
 
   ipcMain.handle('app:openExternal', async (_event, url: string) => {
     await shell.openExternal(url);
+  });
+
+  // Electron's clipboard module bypasses the web clipboard API, which is
+  // unreliable on Linux (Wayland permission prompts, silent failures when
+  // the page loses focus between keydown and the async write).
+  ipcMain.on('app:clipboardWriteText', (_event, text: string) => {
+    clipboard.writeText(text);
+  });
+  ipcMain.handle('app:clipboardReadText', () => {
+    return clipboard.readText();
   });
 
   ipcMain.handle('app:showOpenDialog', async () => {
@@ -58,6 +183,27 @@ export function registerAppIpc(): void {
       }
 
       return { success: true, data: result.filePaths };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('app:pickExecutable', async () => {
+    try {
+      const win = BrowserWindow.getFocusedWindow();
+      // On macOS, treat .app bundles as directories so the user can drill into
+      // Contents/MacOS/<binary> if they need the actual executable.
+      const properties: Electron.OpenDialogOptions['properties'] =
+        process.platform === 'darwin' ? ['openFile', 'treatPackageAsDirectory'] : ['openFile'];
+      const options: Electron.OpenDialogOptions = { properties };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: true, data: null };
+      }
+      return { success: true, data: result.filePaths[0] };
     } catch (error) {
       return { success: false, error: String(error) };
     }
@@ -134,7 +280,7 @@ export function registerAppIpc(): void {
   // Read effective commit attribution from Claude Code settings hierarchy
   ipcMain.handle(
     'app:getClaudeAttribution',
-    (_event, projectPath?: string): { success: boolean; data: string | null } => {
+    (_event, projectPath?: string): { success: boolean; data?: string | null; error?: string } => {
       try {
         // Check project-level settings first (higher precedence)
         if (projectPath) {
@@ -160,7 +306,7 @@ export function registerAppIpc(): void {
         return { success: true, data: null };
       } catch (err) {
         console.error('[app:getClaudeAttribution] Failed to read settings:', err);
-        return { success: true, data: null };
+        return { success: false, error: String(err) };
       }
     },
   );
@@ -209,31 +355,67 @@ export function registerAppIpc(): void {
 
   ipcMain.handle(
     'app:openInIDE',
-    async (_event, args: { folderPath: string; ide?: 'cursor' | 'code' }) => {
+    async (
+      _event,
+      args: {
+        folderPath: string;
+        ide?: string;
+        // Only used when ide === 'custom'. Args may contain the literal token
+        // {path}; if absent, folderPath is appended. SECURITY: keep using
+        // execFile (argv-based) — never switch to exec/shell:true, or these
+        // user-supplied args become shell-injectable.
+        customCommand?: { path: string; args: string[] };
+      },
+    ) => {
       try {
         if (!existsSync(args.folderPath)) {
           return { success: false, error: `Path not found: ${args.folderPath}` };
         }
 
-        let ide = args.ide;
-        if (!ide) {
-          // Auto-detect: prefer cursor, then code
-          for (const candidate of ['cursor', 'code'] as const) {
-            try {
-              await execFileAsync('which', [candidate]);
-              ide = candidate;
-              break;
-            } catch {
-              // Not found, try next
-            }
+        if (args.ide === 'custom') {
+          const custom = args.customCommand;
+          if (!custom?.path) {
+            return { success: false, error: 'No custom IDE configured' };
           }
+          if (!existsSync(custom.path)) {
+            return { success: false, error: `Custom IDE not found: ${custom.path}` };
+          }
+          const substituted = custom.args.map((a) => a.replace('{path}', args.folderPath));
+          const finalArgs = custom.args.some((a) => a.includes('{path}'))
+            ? substituted
+            : [...substituted, args.folderPath];
+          await execFileAsync(custom.path, finalArgs);
+          return { success: true, data: null };
         }
 
-        if (!ide) {
-          return { success: false, error: 'No supported IDE found (cursor, code)' };
+        const detected = await detectIdes();
+        if (detected.length === 0) {
+          return { success: false, error: 'No supported IDE found on this machine' };
         }
 
-        await execFileAsync(ide, [args.folderPath]);
+        const target =
+          args.ide && args.ide !== 'auto' ? detected.find((d) => d.id === args.ide) : detected[0];
+
+        if (!target) {
+          const entry = IDE_REGISTRY.find((e) => e.id === args.ide);
+          const label = entry?.label ?? args.ide;
+          return {
+            success: false,
+            error: `${label} is not installed or its launcher could not be found`,
+          };
+        }
+
+        // On Windows, IDE binaries are typically .cmd wrappers that must run via cmd.exe
+        if (process.platform === 'win32') {
+          await execFileAsync('cmd.exe', [
+            '/c',
+            target.launcher,
+            ...target.newWindowArgs,
+            args.folderPath,
+          ]);
+        } else {
+          await execFileAsync(target.launcher, [...target.newWindowArgs, args.folderPath]);
+        }
         return { success: true, data: null };
       } catch (error) {
         return { success: false, error: String(error) };
@@ -243,16 +425,11 @@ export function registerAppIpc(): void {
 
   ipcMain.handle('app:detectAvailableIDEs', async () => {
     try {
-      const available: string[] = [];
-      for (const ide of ['cursor', 'code']) {
-        try {
-          await execFileAsync('which', [ide]);
-          available.push(ide);
-        } catch {
-          // Not found
-        }
-      }
-      return { success: true, data: available };
+      const detected = await detectIdes();
+      return {
+        success: true,
+        data: detected.map(({ id, label }) => ({ id, label })),
+      };
     } catch (error) {
       return { success: false, error: String(error) };
     }
@@ -270,8 +447,7 @@ export function registerAppIpc(): void {
         const editor = await detectEditor();
 
         // Build location string with line:col for editors that support -g
-        const gotoEditors = ['code', 'cursor', 'zed'];
-        const isGotoEditor = gotoEditors.some((e) => editor === e || editor.endsWith(`/${e}`));
+        const isGotoEditor = /[\\/]?(cursor|code|zed)(\.cmd|\.exe)?$/i.test(editor);
 
         if (isGotoEditor) {
           const location =
@@ -280,9 +456,16 @@ export function registerAppIpc(): void {
               : args.line != null
                 ? `${resolved}:${args.line}`
                 : resolved;
-          await execFileAsync(editor, ['-g', location]);
+          if (process.platform === 'win32') {
+            await execFileAsync('cmd.exe', ['/c', editor, '-g', location]);
+          } else {
+            await execFileAsync(editor, ['-g', location]);
+          }
         } else if (editor === 'open') {
           await execFileAsync('open', [resolved]);
+        } else if (editor === 'start') {
+          // Windows fallback — empty title arg keeps `start` from treating the path as a window title
+          await execFileAsync('cmd.exe', ['/c', 'start', '', resolved]);
         } else {
           // Generic editor (vim, nano, etc.) — just open the file
           await execFileAsync(editor, [resolved]);

@@ -42,6 +42,11 @@ export class TerminalSessionManager {
   private savedViewportY: number | null = null;
   readonly shellOnly: boolean;
   private themeId: string;
+  // Claude Code's TUI rewrites cells continuously, which causes xterm to drop
+  // the visible selection before the user can press the copy shortcut. Cache
+  // the last non-empty selection on every change so Ctrl+Shift+C / Cmd+C can
+  // still copy it even after xterm has cleared the highlight.
+  private lastSelection = '';
   constructor(opts: {
     id: string;
     cwd: string;
@@ -108,6 +113,13 @@ export class TerminalSessionManager {
       ),
     );
 
+    // Cache selection on every change — Claude Code's TUI rewrites cells as the
+    // user drags, which clears xterm's selection before the copy shortcut fires.
+    this.terminal.onSelectionChange(() => {
+      const sel = this.terminal.getSelection();
+      if (sel) this.lastSelection = sel;
+    });
+
     // Track cwd via OSC 7 (emitted by zsh on macOS by default)
     this.terminal.parser.registerOscHandler(7, (data) => {
       try {
@@ -130,29 +142,36 @@ export class TerminalSessionManager {
 
       const isMac = navigator.userAgent.includes('Mac');
 
-      // Copy: Cmd+C (macOS) or Ctrl+Shift+C (Linux) — copy terminal selection
+      // Match by physical key (e.code) so alternate keyboard layouts where
+      // Ctrl+Shift+C reports e.key as something other than 'C' still work.
+      const isKeyC = e.code === 'KeyC';
+      const isKeyV = e.code === 'KeyV';
+
+      // Copy: Cmd+C (macOS) or Ctrl+Shift+C (Linux) — copy terminal selection.
       // Also Ctrl+C on any platform when there's an active selection (matches
-      // native terminal behaviour: Ctrl+C copies when selected, sends SIGINT otherwise)
-      if (
-        (isMac && e.metaKey && e.key === 'c') ||
-        (!isMac && e.ctrlKey && e.shiftKey && e.key === 'C') ||
-        (e.ctrlKey && !e.shiftKey && e.key === 'c' && this.terminal.hasSelection())
-      ) {
-        const sel = this.terminal.getSelection();
+      // native terminal behaviour: Ctrl+C copies when selected, sends SIGINT
+      // otherwise). Explicit shortcuts fall back to lastSelection so users can
+      // still copy after the TUI has cleared xterm's highlight.
+      const isExplicitCopy =
+        (isMac && e.metaKey && isKeyC && !e.ctrlKey) ||
+        (!isMac && e.ctrlKey && e.shiftKey && isKeyC);
+      const isPlainCtrlC = e.ctrlKey && !e.shiftKey && isKeyC && this.terminal.hasSelection();
+      if (isExplicitCopy || isPlainCtrlC) {
+        const sel = this.terminal.getSelection() || (isExplicitCopy ? this.lastSelection : '');
         if (sel) {
           e.preventDefault();
-          navigator.clipboard.writeText(sel);
+          window.electronAPI.clipboardWriteText(sel);
           return false;
         }
       }
 
       // Paste: Cmd+V (macOS) or Ctrl+Shift+V (Linux)
       if (
-        (isMac && e.metaKey && e.key === 'v') ||
-        (!isMac && e.ctrlKey && e.shiftKey && e.key === 'V')
+        (isMac && e.metaKey && isKeyV && !e.ctrlKey) ||
+        (!isMac && e.ctrlKey && e.shiftKey && isKeyV)
       ) {
         e.preventDefault();
-        navigator.clipboard.readText().then((text) => {
+        window.electronAPI.clipboardReadText().then((text) => {
           if (text) window.electronAPI.ptyInput({ id: this.id, data: text });
         });
         return false;
@@ -238,6 +257,10 @@ export class TerminalSessionManager {
       if (this.terminal.element && bg) {
         this.terminal.element.style.backgroundColor = bg;
       }
+      // Windows: pad right so fit addon leaves room for the scrollbar.
+      if (this.terminal.element && window.electronAPI.getPlatform() === 'win32') {
+        this.terminal.element.style.paddingRight = '24px';
+      }
       // Load GPU addon after terminal is in DOM
       await this.loadGpuAddon();
       // After yielding, check if a newer attach() has started (React remount)
@@ -296,8 +319,11 @@ export class TerminalSessionManager {
           if (snapshotResp.success && snapshotResp.data) {
             existingSnapshot = snapshotResp.data;
           }
-        } catch {
-          // Best effort
+        } catch (err) {
+          // Snapshot fetch via IPC: legitimate "no snapshot" arrives as a
+          // success with empty data, so reaching the catch means IPC itself
+          // misbehaved — log so a permanently broken bridge is debuggable.
+          console.warn('[terminal] ptyGetSnapshot failed:', err);
         }
         if (gen !== this.attachGeneration) return;
 
@@ -315,36 +341,38 @@ export class TerminalSessionManager {
         if (existingSnapshot && !reattached) {
           try {
             this.terminal.write(existingSnapshot.data);
-          } catch {
-            // Best effort
+          } catch (err) {
+            // xterm rejected the buffered bytes — usually a corrupt or
+            // malformed control sequence in the snapshot. Without logging,
+            // the user just sees a half-rendered terminal with no clue why.
+            console.warn('[terminal] writing snapshot to xterm failed:', err);
           }
         }
       } else {
-        // Claude Code mode: try direct spawn, fall back to shell
-        let resume = false;
+        // Claude Code mode: try direct spawn, fall back to shell.
+        // Main process decides whether to resume (by checking if this task's
+        // own Claude session file exists) — renderer no longer gates on it.
         let existingSnapshot: TerminalSnapshot | null = null;
         try {
           const snapshotResp = await window.electronAPI.ptyGetSnapshot(this.id);
           if (snapshotResp.success && snapshotResp.data) {
             existingSnapshot = snapshotResp.data;
-            // Only check for session if we have a snapshot (nothing to resume without one)
-            const sessionResp = await window.electronAPI.ptyHasClaudeSession(this.cwd);
-            if (sessionResp.success && sessionResp.data) {
-              resume = true;
-            }
           }
-        } catch {
-          // Best effort
+        } catch (err) {
+          // Snapshot fetch via IPC: legitimate "no snapshot" arrives as a
+          // success with empty data, so reaching the catch means IPC itself
+          // misbehaved — log so a permanently broken bridge is debuggable.
+          console.warn('[terminal] ptyGetSnapshot failed:', err);
         }
         if (gen !== this.attachGeneration) return;
 
-        let result = await this.startPty(resume);
+        let result = await this.startPty();
         if (gen !== this.attachGeneration) return;
 
         // If we reattached to an existing direct-spawn PTY (e.g. after CMD+R),
-        // kill it and spawn fresh with resume. Ink's internal cursor state can't
-        // be recovered via SIGWINCH, but a fresh Claude Code process with
-        // --continue --resume preserves the session and gives a clean TUI init.
+        // kill it and spawn fresh. Ink's internal cursor state can't be
+        // recovered via SIGWINCH, but a fresh Claude Code process with `-r`
+        // pointed at this task's session file gives a clean TUI init.
         if (result.reattached && result.isDirectSpawn) {
           this._isRestarting = true;
           this.readyFired = false;
@@ -353,7 +381,7 @@ export class TerminalSessionManager {
           this.dataBuffer = [];
           window.electronAPI.ptyKill(this.id);
           this.ptyStarted = false;
-          result = await this.startPty(resume);
+          result = await this.startPty();
           if (gen !== this.attachGeneration) return;
 
           // Fallback: hide overlay after 10s even if no data arrives
@@ -368,8 +396,11 @@ export class TerminalSessionManager {
         if (existingSnapshot && !result.reattached) {
           try {
             this.terminal.write(existingSnapshot.data);
-          } catch {
-            // Best effort
+          } catch (err) {
+            // xterm rejected the buffered bytes — usually a corrupt or
+            // malformed control sequence in the snapshot. Without logging,
+            // the user just sees a half-rendered terminal with no clue why.
+            console.warn('[terminal] writing snapshot to xterm failed:', err);
           }
         }
       }
@@ -577,6 +608,12 @@ export class TerminalSessionManager {
 
   /** Reduce cols for PTY so the TUI leaves a right-side gutter. */
   private ptyCols(cols: number): number {
+    // Windows: no col reserve — Ink's cursor positioning drifts from xterm's
+    // grid during streaming if PTY cols < xterm cols, producing garbled output.
+    // Scrollbar clearance is handled by paddingRight on the .xterm element.
+    if (window.electronAPI.getPlatform() === 'win32') {
+      return Math.max(1, cols);
+    }
     const reserve = this.shellOnly
       ? TerminalSessionManager.COL_RESERVE_SHELL
       : TerminalSessionManager.COL_RESERVE;
@@ -604,7 +641,7 @@ export class TerminalSessionManager {
     }
   }
 
-  private async startPty(resume: boolean = false): Promise<{
+  private async startPty(): Promise<{
     reattached: boolean;
     isDirectSpawn: boolean;
   }> {
@@ -620,7 +657,6 @@ export class TerminalSessionManager {
       cols,
       rows,
       autoApprove: this.autoApprove,
-      resume,
       isDark: this.isDark,
     });
 
@@ -765,8 +801,10 @@ export class TerminalSessionManager {
       };
       window.electronAPI.ptySaveSnapshot(this.id, snapshot);
       this.snapshotDirty = false;
-    } catch {
-      // Best effort
+    } catch (err) {
+      // Serialize / IPC failure. If snapshots are silently broken, the user
+      // sees a blank terminal on next reload with no way to attribute it.
+      console.warn('[terminal] saveSnapshot failed:', err);
     }
   }
 
@@ -777,8 +815,8 @@ export class TerminalSessionManager {
         this.terminal.write(resp.data.data);
         return true;
       }
-    } catch {
-      // Best effort
+    } catch (err) {
+      console.warn('[terminal] restoreSnapshot failed:', err);
     }
     return false;
   }

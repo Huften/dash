@@ -104,7 +104,6 @@ export interface PtyOptions {
   cols: number;
   rows: number;
   autoApprove?: boolean;
-  resume?: boolean;
 }
 
 export interface TerminalSnapshot {
@@ -197,6 +196,9 @@ export interface BranchInfo {
   ref: string; // "origin/main", "origin/develop"
   shortHash: string; // "a1b2c3d"
   relativeDate: string; // "2 days ago"
+  // Present iff the branch tracks a remote and we successfully measured.
+  // Both fields move together — never one without the other.
+  upstream?: { ahead: number; behind: number };
 }
 
 // ── Git Types ────────────────────────────────────────────────
@@ -360,6 +362,112 @@ export interface PixelAgentsOffice {
   enabled: boolean;
 }
 
+// ── Skills Registry Types ──────────────────────────────────
+
+/**
+ * Slim card-and-search shape persisted in the local SQLite cache. We deliberately drop
+ * registry fields we don't display (license, permissionNote, sourceUrl, author, source)
+ * — users who want license details click through to GitHub.
+ */
+export interface RegistrySkill {
+  name: string;
+  description: string;
+  repo: string;
+  path: string;
+  branch: string;
+  category: string;
+  tags: string[];
+  stars: number;
+  /** "compatible" → safe to install, "restricted" → license requires verification before reuse. */
+  distribution?: 'compatible' | 'restricted';
+}
+
+/**
+ * Tagged union so renderers can't confuse "no cache yet" with "stale cache" — the
+ * earlier optional-fields shape made it easy to render an empty browser silently when
+ * a refresh failure replaced a populated cache.
+ */
+export type SkillsRegistryMeta =
+  | { status: 'never-fetched'; totalCount: 0; fetchedAt: null }
+  | { status: 'fresh'; totalCount: number; fetchedAt: number }
+  | { status: 'stale'; totalCount: number; fetchedAt: number; refreshError: string };
+
+export interface SkillsSearchArgs {
+  query: string;
+  category?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SkillsSearchResult {
+  skills: RegistrySkill[];
+  total: number;
+}
+
+/** A skill found on disk by `listInstalled`. The catalog field carries the registry
+ *  metadata when the skill is also in our cached top-N — null otherwise (e.g. user
+ *  installed a long-tail skill, or a skill from outside the registry). */
+export interface InstalledSkill {
+  /** Folder name under .claude/skills/. */
+  skillName: string;
+  /** True iff installed at ~/.claude/skills/<skillName>/. */
+  globalInstalled: boolean;
+  /** Subset of probePaths where the skill is installed. */
+  installedPaths: string[];
+  catalog: RegistrySkill | null;
+}
+
+export interface InstalledSkillsResult {
+  skills: InstalledSkill[];
+  /** Paths that couldn't be enumerated (EACCES, EIO etc.) — those probes silently
+   *  truncated prior to this field, so the UI now warns the user that the list may
+   *  be incomplete instead of misrepresenting "not found" results. */
+  probeFailures: ProbeFailure[];
+}
+
+/** Structured probe failure so the renderer can render the right label per scope without
+ *  string-sniffing. `code` is either an errno (EACCES, EIO, …) or a Dash-internal sentinel
+ *  ('marker-corrupt') so the UI can offer the matching recovery action. */
+export type ProbeFailure =
+  | { scope: 'global'; code: string }
+  | { scope: 'path'; path: string; code: string };
+
+export interface SkillInstallStatus {
+  global: boolean;
+  /** Subset of the input probe paths where the skill is currently installed. The caller
+   *  passes both project roots and task worktree paths; the renderer maps them back. */
+  installedPaths: string[];
+  /** Non-ENOENT errors per probe path — e.g. EACCES on /Users/foo/proj means we can't tell
+   *  whether the skill is installed there. UI should treat any of these as "unknown"
+   *  rather than "not installed", and ideally list each affected path inline. */
+  probeFailures?: ProbeFailure[];
+}
+
+export type SkillInstallTarget =
+  | { kind: 'global' }
+  | { kind: 'project'; projectPath: string }
+  /** A task lives in its own worktree directory; installing here writes uncommitted
+   *  files into that worktree only — invisible to other tasks and to the project root. */
+  | { kind: 'task'; worktreePath: string };
+
+/** Identifies a remote skill in the registry. */
+export interface SkillRef {
+  repo: string;
+  path: string;
+  branch: string;
+}
+
+export interface SkillInstallArgs {
+  ref: SkillRef;
+  skillName: string;
+  target: SkillInstallTarget;
+}
+
+export interface SkillUninstallArgs {
+  skillName: string;
+  target: SkillInstallTarget;
+}
+
 export interface PixelAgentsConfig {
   name: string;
   palette?: number;
@@ -374,3 +482,81 @@ export interface PixelAgentsStatus {
   running: boolean;
   offices: Record<string, PixelAgentsOfficeStatus>;
 }
+
+// ── RTK (Rust Token Killer) Types ───────────────────────────
+
+export type RtkSource = 'path' | 'managed';
+
+// `enabled` only makes sense when a binary is installed — RtkService.setEnabled
+// throws if you try to enable without resolution. Encoding the rule in the
+// type means TS prevents the impossible state at construction; the IPC
+// pre-flight check that previously enforced it at runtime can be dropped.
+export type RtkStatus =
+  | {
+      installed: true;
+      version: string;
+      path: string;
+      source: RtkSource;
+      enabled: boolean;
+      downloadable: boolean;
+    }
+  | { installed: false; downloadable: boolean };
+
+export type RtkDownloadProgress =
+  | { phase: 'downloading'; percent: number }
+  | { phase: 'verifying' }
+  | { phase: 'extracting' }
+  | { phase: 'done'; version: string }
+  | { phase: 'error'; error: string };
+
+export type RtkExecDiff =
+  | {
+      kind: 'ok';
+      /** Stdout of the raw tested command, capped for IPC payload size. */
+      rawStdout: string;
+      /** Stdout of the rtk-rewritten command, capped for IPC payload size. */
+      compressedStdout: string;
+      /** Untruncated byte counts, so the UI can show honest savings math. */
+      rawBytes: number;
+      compressedBytes: number;
+      /** True when stdout was truncated at the runShell cap; bytes counts
+       *  reflect the truncated buffer in that case (we stop reading). */
+      truncated: boolean;
+    }
+  | {
+      /** Diff capture itself failed — distinct from "rtk chose pass-through".
+       *  UI must NOT render this as a successful no-op rewrite. */
+      kind: 'failed';
+      /** Which stage broke: `setup` (mkdtemp/git init), `raw` (the original
+       *  command), `rewritten` (the rtk-rewritten command), or `unknown`. */
+      stage: 'setup' | 'raw' | 'rewritten' | 'unknown';
+      /** Exit code when the command exited non-zero; absent when the failure
+       *  happened before spawn (mkdtemp, git init, etc.). */
+      exitCode?: number;
+      /** Truncated stderr for the failed stage, when available. */
+      stderr?: string;
+      /** Human-readable reason — what to show in the UI. */
+      reason: string;
+    };
+
+// Three orthogonal optionals (`rewrittenCommand: string | null`, `blocked?`,
+// `execDiff?`) admitted impossible combinations in production code (e.g.
+// blocked AND rewritten). A nested outcome discriminant collapses them so
+// the renderer's three branches map 1:1 to representable states.
+export type RtkTestResult =
+  | { ok: false; testedCommand?: string; error: string }
+  | {
+      ok: true;
+      testedCommand: string;
+      rawOutput: string;
+      outcome: RtkTestOutcome;
+    };
+
+export type RtkTestOutcome =
+  // rtk ran cleanly and chose pass-through (no rewrite for this command).
+  | { kind: 'pass-through' }
+  // rtk used exit 2 to block the tool call. Distinct from a failure.
+  | { kind: 'blocked'; stderr: string }
+  // rtk emitted a rewrite. execDiff is best-effort visualization, not a
+  // correctness signal — its absence/failure does not invalidate the rewrite.
+  | { kind: 'rewritten'; rewrittenCommand: string; execDiff?: RtkExecDiff };

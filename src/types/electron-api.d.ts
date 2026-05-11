@@ -19,7 +19,20 @@ import type {
   PixelAgentsConfig,
   PixelAgentsStatus,
   ActivityInfo,
+  RtkStatus,
+  RtkDownloadProgress,
+  RtkTestResult,
+  SkillsSearchResult,
+  SkillInstallStatus,
+  SkillRef,
+  SkillInstallArgs,
+  SkillInstallTarget,
+  SkillUninstallArgs,
+  SkillsSearchArgs,
+  SkillsRegistryMeta,
+  InstalledSkillsResult,
 } from '../shared/types';
+import type { ParsedSessionMessage, SessionMetrics, SessionUpdate } from '../shared/sessionTypes';
 
 export interface ElectronAPI {
   // App
@@ -29,14 +42,21 @@ export interface ElectronAPI {
   // Dialogs
   showOpenDialog: () => Promise<IpcResponse<string[]>>;
   openExternal: (url: string) => Promise<void>;
+  clipboardWriteText: (text: string) => void;
+  clipboardReadText: () => Promise<string>;
   openInEditor: (args: {
     cwd: string;
     filePath: string;
     line?: number;
     col?: number;
   }) => Promise<IpcResponse<null>>;
-  openInIDE: (args: { folderPath: string; ide?: 'cursor' | 'code' }) => Promise<IpcResponse<null>>;
-  detectAvailableIDEs: () => Promise<IpcResponse<string[]>>;
+  openInIDE: (args: {
+    folderPath: string;
+    ide?: string;
+    customCommand?: { path: string; args: string[] };
+  }) => Promise<IpcResponse<null>>;
+  detectAvailableIDEs: () => Promise<IpcResponse<Array<{ id: string; label: string }>>>;
+  pickExecutable: () => Promise<IpcResponse<string | null>>;
 
   // Database - Projects
   getProjects: () => Promise<IpcResponse<Project[]>>;
@@ -85,6 +105,13 @@ export interface ElectronAPI {
     linkedIssueNumbers?: number[];
     pushRemote?: boolean;
   }) => Promise<IpcResponse<WorktreeInfo>>;
+  worktreeCreateFromExisting: (args: {
+    projectPath: string;
+    taskName: string;
+    branch: string;
+    projectId: string;
+    linkedIssueNumbers?: number[];
+  }) => Promise<IpcResponse<WorktreeInfo>>;
   worktreeEnsureReserve: (args: {
     projectId: string;
     projectPath: string;
@@ -98,7 +125,6 @@ export interface ElectronAPI {
     cols: number;
     rows: number;
     autoApprove?: boolean;
-    resume?: boolean;
     isDark?: boolean;
   }) => Promise<
     IpcResponse<{
@@ -140,9 +166,6 @@ export interface ElectronAPI {
   ptyGetSnapshot: (id: string) => Promise<IpcResponse<TerminalSnapshot | null>>;
   ptySaveSnapshot: (id: string, payload: TerminalSnapshot) => void;
   ptyClearSnapshot: (id: string) => Promise<IpcResponse<void>>;
-
-  // Session detection
-  ptyHasClaudeSession: (cwd: string) => Promise<IpcResponse<boolean>>;
 
   // Task context for SessionStart hook
   ptyWriteTaskContext: (args: { taskId: string; prompt: string }) => Promise<IpcResponse<void>>;
@@ -232,6 +255,8 @@ export interface ElectronAPI {
   gitPush: (cwd: string) => Promise<IpcResponse<void>>;
   gitRemoteBranchExists: (args: { cwd: string; branch: string }) => Promise<IpcResponse<boolean>>;
 
+  gitCheckoutBranch: (args: { cwd: string; branch: string }) => Promise<IpcResponse<void>>;
+
   // Commit graph
   gitGetCommitGraph: (args: {
     cwd: string;
@@ -256,6 +281,45 @@ export interface ElectronAPI {
   pixelAgentsStop: () => Promise<IpcResponse<void>>;
   onPixelAgentsStatusChanged: (callback: (status: PixelAgentsStatus) => void) => () => void;
 
+  // RTK (Rust Token Killer)
+  rtkGetStatus: () => Promise<IpcResponse<RtkStatus>>;
+  rtkSetEnabled: (enabled: boolean) => Promise<IpcResponse<{ warning?: string }>>;
+  rtkDownload: () => Promise<IpcResponse<{ warning?: string } | undefined>>;
+  rtkTest: () => Promise<IpcResponse<RtkTestResult>>;
+  onRtkDownloadProgress: (callback: (progress: RtkDownloadProgress) => void) => () => void;
+
+  // Skills
+  skillsRefresh: (args?: { force?: boolean }) => Promise<IpcResponse<SkillsRegistryMeta>>;
+  skillsGetMeta: () => Promise<IpcResponse<SkillsRegistryMeta>>;
+  skillsGetCategories: () => Promise<IpcResponse<string[]>>;
+  skillsSearch: (args: SkillsSearchArgs) => Promise<IpcResponse<SkillsSearchResult>>;
+  skillsGetContent: (args: SkillRef) => Promise<IpcResponse<string>>;
+  skillsReadLocalSkillMd: (args: {
+    skillName: string;
+    target: SkillInstallTarget;
+  }) => Promise<IpcResponse<string>>;
+  skillsInstall: (args: SkillInstallArgs) => Promise<IpcResponse<void>>;
+  skillsCheckInstalled: (args: {
+    skillName: string;
+    probePaths: string[];
+    /** Provide for registry skills so the marker file is checked; omit for legacy
+     *  presence-only checks. */
+    ref?: SkillRef | null;
+  }) => Promise<IpcResponse<SkillInstallStatus>>;
+  skillsListInstalled: (args: {
+    probePaths: string[];
+  }) => Promise<IpcResponse<InstalledSkillsResult>>;
+  skillsUninstall: (args: SkillUninstallArgs) => Promise<IpcResponse<void>>;
+  skillsResetCache: () => Promise<IpcResponse<SkillsRegistryMeta>>;
+
+  // Session (structured view)
+  sessionWatch: (args: { taskId: string; taskPath: string }) => Promise<IpcResponse<void>>;
+  sessionUnwatch: (taskId: string) => Promise<IpcResponse<void>>;
+  sessionGetMessages: (
+    taskId: string,
+  ) => Promise<IpcResponse<{ messages: ParsedSessionMessage[]; metrics: SessionMetrics } | null>>;
+  onSessionUpdate: (callback: (data: SessionUpdate) => void) => () => void;
+
   // Telemetry
   telemetryCapture: (event: string, properties?: Record<string, unknown>) => Promise<void>;
   telemetryGetStatus: () => Promise<IpcResponse<{ enabled: boolean; envDisabled: boolean }>>;
@@ -265,6 +329,8 @@ export interface ElectronAPI {
   autoUpdateCheck: () => Promise<IpcResponse<void>>;
   autoUpdateDownload: () => Promise<IpcResponse<void>>;
   autoUpdateQuitAndInstall: () => Promise<IpcResponse<void>>;
+  autoUpdateGetEnabled: () => Promise<IpcResponse<boolean>>;
+  autoUpdateSetEnabled: (enabled: boolean) => Promise<IpcResponse<void>>;
   onAutoUpdateAvailable: (callback: (info: { version: string }) => void) => () => void;
   onAutoUpdateNotAvailable: (callback: () => void) => () => void;
   onAutoUpdateDownloadProgress: (

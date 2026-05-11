@@ -15,6 +15,7 @@ import {
   ChevronDown,
   PanelLeftClose,
   PanelLeftOpen,
+  Blocks,
   X,
 } from 'lucide-react';
 import type {
@@ -38,6 +39,7 @@ function RotationSection({
   onSelectTask,
   onReorderRotation,
   onRemoveFromRotation,
+  contextUsage = {},
 }: {
   rotationTasks: Task[];
   activeTaskId: string | null;
@@ -47,6 +49,7 @@ function RotationSection({
   onSelectTask: (projectId: string, taskId: string) => void;
   onReorderRotation?: (reordered: Task[]) => void;
   onRemoveFromRotation?: (taskId: string) => void;
+  contextUsage?: Record<string, ContextUsage>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -114,6 +117,7 @@ function RotationSection({
           const activity = taskActivity[task.id]?.state;
           const isActiveTask = task.id === activeTaskId;
           const project = projects.find((p) => p.id === task.projectId);
+          const ctx = contextUsage[task.id];
 
           return (
             <div
@@ -142,6 +146,18 @@ function RotationSection({
               ) : null}
 
               <span className="truncate flex-1">{task.name}</span>
+              {ctx && ctx.percentage > 0 && (
+                <span
+                  className={`text-[9px] tabular-nums flex-shrink-0 ${
+                    ctx.percentage >= 80
+                      ? 'text-red-400 font-medium'
+                      : usageTextColor(ctx.percentage)
+                  }`}
+                  title={`Context: ${ctx.used.toLocaleString()} / ${ctx.total.toLocaleString()} tokens (${Math.round(ctx.percentage)}%)`}
+                >
+                  {Math.round(ctx.percentage)}%
+                </span>
+              )}
               {project && (
                 <span className="text-muted-foreground/40 text-[11px] whitespace-nowrap overflow-hidden flex-shrink min-w-0">
                   {project.name}
@@ -199,6 +215,7 @@ interface LeftSidebarProps {
   onRemoveFromRotation?: (taskId: string) => void;
   showActiveTasksSection?: boolean;
   onToggleActiveTasksSection?: () => void;
+  onOpenSkillsBrowser?: () => void;
 }
 
 export function LeftSidebar({
@@ -233,6 +250,7 @@ export function LeftSidebar({
   onRemoveFromRotation,
   showActiveTasksSection = true,
   onToggleActiveTasksSection,
+  onOpenSkillsBrowser,
 }: LeftSidebarProps) {
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [collapsedArchived, setCollapsedArchived] = useState<Set<string>>(new Set());
@@ -398,6 +416,15 @@ export function LeftSidebar({
 
         <div className="w-6 border-t border-border/30 my-1" />
 
+        <Tooltip content="Skills">
+          <button
+            onClick={onOpenSkillsBrowser}
+            className="p-2 rounded-md hover:bg-accent/60 text-muted-foreground hover:text-foreground transition-colors titlebar-no-drag"
+          >
+            <Blocks size={18} strokeWidth={1.5} />
+          </button>
+        </Tooltip>
+
         <Tooltip content="Settings">
           <button
             onClick={onOpenSettings}
@@ -447,6 +474,7 @@ export function LeftSidebar({
           onSelectTask={onSelectTask}
           onReorderRotation={onReorderRotation}
           onRemoveFromRotation={onRemoveFromRotation}
+          contextUsage={contextUsage}
         />
       )}
 
@@ -788,8 +816,15 @@ export function LeftSidebar({
         </div>
       </div>
 
-      {/* Settings */}
-      <div className="px-2 py-2 border-t border-border/30">
+      {/* Skills & Settings */}
+      <div className="px-2 py-2 border-t border-border/30 space-y-0.5">
+        <button
+          onClick={onOpenSkillsBrowser}
+          className="flex items-center gap-2 px-2.5 py-[7px] w-full rounded-md text-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-all duration-150 titlebar-no-drag"
+        >
+          <Blocks size={14} strokeWidth={1.8} />
+          <span>Skills</span>
+        </button>
         <button
           onClick={onOpenSettings}
           className="settings-btn flex items-center gap-2 px-2.5 py-[7px] w-full rounded-md text-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground transition-all duration-150 titlebar-no-drag"

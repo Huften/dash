@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { openInIde } from '../lib/openInIde';
 import {
   GitBranch,
   Plus,
@@ -246,7 +247,7 @@ export function ProjectOverview({
                   <button
                     key={task.id}
                     onClick={() => onSelectTask(task.id)}
-                    className="relative flex flex-col p-4 rounded-xl border border-border bg-[hsl(var(--surface-2))] hover:bg-[hsl(var(--surface-3))] hover:border-foreground/20 transition-all duration-150 text-left group"
+                    className="relative flex flex-col p-4 rounded-xl border border-border bg-[hsl(var(--surface-2))] hover:bg-[hsl(var(--surface-3))] hover:border-foreground/20 transition-all duration-150 text-left group overflow-hidden min-w-0"
                   >
                     {/* Open in IDE — top right */}
                     <Tooltip content="Open in IDE">
@@ -255,12 +256,7 @@ export function ProjectOverview({
                         tabIndex={-1}
                         onClick={(e) => {
                           e.stopPropagation();
-                          const stored = localStorage.getItem('preferredIDE');
-                          const ide = stored === 'cursor' || stored === 'code' ? stored : undefined;
-                          window.electronAPI.openInIDE({
-                            folderPath: task.path || project.path,
-                            ide,
-                          });
+                          openInIde(task.path || project.path);
                         }}
                         className="absolute top-3 right-3 p-1 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-accent/60 opacity-0 group-hover:opacity-100"
                       >
@@ -269,7 +265,7 @@ export function ProjectOverview({
                     </Tooltip>
 
                     {/* Task name + status */}
-                    <div className="flex items-start gap-2.5 mb-3 pr-6">
+                    <div className="flex items-start gap-2.5 mb-3 pr-6 min-w-0">
                       <div className="mt-1.5 flex-shrink-0">
                         <ActivityDot info={activity} />
                       </div>
@@ -279,19 +275,19 @@ export function ProjectOverview({
                     </div>
 
                     {/* Details */}
-                    <div className="flex flex-col gap-1.5 flex-1 text-[11px]">
+                    <div className="flex flex-col gap-1.5 flex-1 text-[11px] w-full overflow-hidden">
                       {task.branch && (
-                        <div className="flex items-center gap-1.5 text-muted-foreground">
-                          <span className="flex-shrink-0 text-muted-foreground/70">Branch:</span>
-                          <span className="truncate">{task.branch}</span>
+                        <div className="text-muted-foreground truncate">
+                          <span className="text-muted-foreground/70">Branch: </span>
+                          {task.branch}
                         </div>
                       )}
 
                       {task.useWorktree && task.path && (
-                        <div className="flex items-center gap-1.5 text-muted-foreground">
-                          <span className="flex-shrink-0 text-muted-foreground/70">Worktree:</span>
-                          <span className="truncate font-mono text-[10px]">
-                            {task.path.split('/').slice(-2).join('/')}
+                        <div className="text-muted-foreground truncate">
+                          <span className="text-muted-foreground/70">Worktree: </span>
+                          <span className="font-mono text-[10px]">
+                            {task.path.split(/[\\/]/).slice(-2).join('/')}
                           </span>
                         </div>
                       )}

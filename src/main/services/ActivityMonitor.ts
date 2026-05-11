@@ -23,9 +23,6 @@ interface PtyActivity {
    *  StatusLine only fires while Claude is actively working, so a recent
    *  update is strong evidence of busy state even without child processes. */
   lastStatusLineTime: number;
-  /** Timestamp when setIdle was last called. Used by noteStatusLine to avoid
-   *  transitioning back to busy from delayed/buffered statusLine POSTs. */
-  lastIdleTime: number;
   /** Current tool being executed (from PreToolUse hook). */
   tool: ToolActivity | null;
   /** Error info from StopFailure hook. */
@@ -35,9 +32,14 @@ interface PtyActivity {
   /** Timestamp when this PTY was registered. Used to suppress idle→busy
    *  self-heal during Claude CLI startup (initialization child processes). */
   registeredAt: number;
+  /** Pending busy timer. setBusy defers the actual transition so that
+   *  slash commands like /clear (which fire UserPromptSubmit then Stop
+   *  almost immediately) don't flash busy. */
+  pendingBusyTimer: ReturnType<typeof setTimeout> | null;
 }
 
-const POLL_INTERVAL = 2000;
+// PowerShell is heavier than ps, so poll less frequently on Windows
+const POLL_INTERVAL = process.platform === 'win32' ? 5000 : 2000;
 
 /** Hard safety valve: if no child processes for this long while busy/waiting,
  *  force idle. The primary busy→idle signal is the Stop hook — this only
@@ -51,17 +53,17 @@ const DIRECT_SPAWN_CHILDLESS_HARD_LIMIT_MS = 45_000;
  *  stop hooks that fired between chained tool calls. */
 const IDLE_TO_BUSY_GRACE_MS = 4000;
 
-/** How long (ms) after setIdle before noteStatusLine is allowed to transition
- *  back to busy. Prevents delayed/buffered statusLine POSTs from racing with
- *  the Stop hook. After this window, statusLine acts as a fast busy signal
- *  for cases where the UserPromptSubmit hook missed. */
-const IDLE_SETTLE_MS = 2000;
-
 /** How long (ms) after PTY registration before the idle→busy polling
  *  self-heal is allowed. During Claude CLI startup, initialization child
  *  processes (loading CLAUDE.md, indexing, etc.) would falsely trigger
  *  the self-heal. After this window, hooks are the primary signal. */
 const STARTUP_GRACE_MS = 15_000;
+
+/** How long (ms) to defer the busy transition after UserPromptSubmit.
+ *  Slash commands like /clear fire UserPromptSubmit then Stop almost
+ *  immediately — this debounce prevents a visible busy flash. Real
+ *  prompts take longer, so the delay is imperceptible. */
+const BUSY_DEBOUNCE_MS = 300;
 
 /** Build a human-readable label from a PreToolUse hook payload. */
 function buildToolLabel(toolName: string, toolInput: Record<string, unknown> | undefined): string {
@@ -130,11 +132,11 @@ class ActivityMonitorImpl {
       lastChildSeenTime: now,
       idleChildrenSince: 0,
       lastStatusLineTime: 0,
-      lastIdleTime: now,
       tool: null,
       error: null,
       compacting: false,
       registeredAt: now,
+      pendingBusyTimer: null,
     });
     this.emitAll();
   }
@@ -155,12 +157,13 @@ class ActivityMonitorImpl {
 
   /**
    * Called when a statusLine update is received from Claude Code.
-   * StatusLine only fires while Claude is actively working, so refresh
-   * timestamps to prevent the polling fallback from falsely transitioning
-   * busy→idle. Also transitions idle→busy if the PTY has been idle for
-   * longer than IDLE_SETTLE_MS, providing fast busy detection when the
-   * UserPromptSubmit hook misses. The settle window prevents delayed
-   * statusLine POSTs from racing with the Stop hook.
+   * Refreshes timestamps so the polling fallback doesn't falsely transition
+   * busy→idle while Claude is working (statusLine fires during active work).
+   *
+   * Does NOT transition idle→busy — that is handled by setBusy (UserPromptSubmit),
+   * setToolStart (PreToolUse), and the polling self-heal. StatusLine can fire
+   * during session startup/load before Claude is actually working, which would
+   * cause false busy state with no subsequent Stop hook to clear it.
    */
   noteStatusLine(ptyId: string): void {
     const activity = this.activities.get(ptyId);
@@ -169,11 +172,6 @@ class ActivityMonitorImpl {
     activity.lastDataTime = now;
     activity.lastStatusLineTime = now;
     activity.lastChildSeenTime = now;
-    if (activity.state === 'idle' && now - activity.lastIdleTime > IDLE_SETTLE_MS) {
-      activity.state = 'busy';
-      activity.idleChildrenSince = 0;
-      this.emitAll();
-    }
   }
 
   /**
@@ -182,9 +180,14 @@ class ActivityMonitorImpl {
    */
   setIdle(ptyId: string): void {
     const activity = this.activities.get(ptyId);
-    if (!activity || activity.state === 'idle') return;
+    if (!activity) return;
+    // Cancel any pending busy transition (e.g. from /clear)
+    if (activity.pendingBusyTimer) {
+      clearTimeout(activity.pendingBusyTimer);
+      activity.pendingBusyTimer = null;
+    }
+    if (activity.state === 'idle') return;
     activity.state = 'idle';
-    activity.lastIdleTime = Date.now();
     activity.lastStatusLineTime = 0;
     activity.idleChildrenSince = 0;
     activity.tool = null;
@@ -199,11 +202,21 @@ class ActivityMonitorImpl {
   setBusy(ptyId: string): void {
     const activity = this.activities.get(ptyId);
     if (!activity || activity.state === 'busy') return;
-    activity.state = 'busy';
-    activity.lastChildSeenTime = Date.now();
-    activity.idleChildrenSince = 0;
-    activity.error = null; // Clear previous errors on new prompt
-    this.emitAll();
+    // Cancel any existing pending timer before scheduling a new one
+    if (activity.pendingBusyTimer) {
+      clearTimeout(activity.pendingBusyTimer);
+    }
+    // Defer the transition so slash commands that fire Stop immediately
+    // after UserPromptSubmit don't flash busy in the UI.
+    activity.pendingBusyTimer = setTimeout(() => {
+      activity.pendingBusyTimer = null;
+      if (activity.state === 'busy') return; // Already transitioned by another path
+      activity.state = 'busy';
+      activity.lastChildSeenTime = Date.now();
+      activity.idleChildrenSince = 0;
+      activity.error = null;
+      this.emitAll();
+    }, BUSY_DEBOUNCE_MS);
   }
 
   /**
@@ -226,6 +239,13 @@ class ActivityMonitorImpl {
     const activity = this.activities.get(ptyId);
     if (!activity) return;
 
+    // Tool start is definitive proof of work — cancel any pending debounce
+    // and transition to busy immediately.
+    if (activity.pendingBusyTimer) {
+      clearTimeout(activity.pendingBusyTimer);
+      activity.pendingBusyTimer = null;
+    }
+
     activity.tool = {
       toolName,
       label: buildToolLabel(toolName, toolInput),
@@ -238,8 +258,9 @@ class ActivityMonitorImpl {
       activity.error = null;
     }
 
-    activity.lastDataTime = Date.now();
-    activity.lastChildSeenTime = Date.now();
+    const now = Date.now();
+    activity.lastDataTime = now;
+    activity.lastChildSeenTime = now;
     this.emitAll();
   }
 
@@ -251,8 +272,9 @@ class ActivityMonitorImpl {
     const activity = this.activities.get(ptyId);
     if (!activity) return;
     activity.tool = null;
-    activity.lastDataTime = Date.now();
-    activity.lastChildSeenTime = Date.now();
+    const now = Date.now();
+    activity.lastDataTime = now;
+    activity.lastChildSeenTime = now;
     this.emitAll();
   }
 
@@ -293,7 +315,10 @@ class ActivityMonitorImpl {
   }
 
   unregister(ptyId: string): void {
-    if (this.activities.delete(ptyId)) {
+    const activity = this.activities.get(ptyId);
+    if (activity) {
+      if (activity.pendingBusyTimer) clearTimeout(activity.pendingBusyTimer);
+      this.activities.delete(ptyId);
       this.emitAll();
     }
   }
@@ -474,16 +499,40 @@ class ActivityMonitorImpl {
   private async buildChildMap(): Promise<Map<number, number[]>> {
     const map = new Map<number, number[]>();
     try {
-      const { stdout } = await execFileAsync('ps', ['-eo', 'pid=,ppid='], {
-        timeout: 2000,
-      });
-      for (const line of stdout.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const parts = trimmed.split(/\s+/);
-        if (parts.length < 2) continue;
-        const pid = parseInt(parts[0], 10);
-        const ppid = parseInt(parts[1], 10);
+      let pidPpidPairs: Array<[number, number]> = [];
+
+      if (process.platform === 'win32') {
+        // Windows: PowerShell Get-CimInstance returns the same data as ps -eo
+        const { stdout } = await execFileAsync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-Command',
+            'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Csv -NoTypeInformation',
+          ],
+          { timeout: 5000 },
+        );
+        const lines = stdout.split(/\r?\n/);
+        // Skip CSV header
+        for (let i = 1; i < lines.length; i++) {
+          const match = lines[i].trim().match(/^"?(\d+)"?,"?(\d+)"?$/);
+          if (!match) continue;
+          pidPpidPairs.push([parseInt(match[1], 10), parseInt(match[2], 10)]);
+        }
+      } else {
+        const { stdout } = await execFileAsync('ps', ['-eo', 'pid=,ppid='], {
+          timeout: 2000,
+        });
+        pidPpidPairs = stdout
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .map((l) => l.split(/\s+/))
+          .filter((parts) => parts.length >= 2)
+          .map((parts) => [parseInt(parts[0], 10), parseInt(parts[1], 10)] as [number, number]);
+      }
+
+      for (const [pid, ppid] of pidPpidPairs) {
         if (isNaN(pid) || isNaN(ppid)) continue;
         let siblings = map.get(ppid);
         if (!siblings) {
@@ -493,7 +542,7 @@ class ActivityMonitorImpl {
         siblings.push(pid);
       }
     } catch {
-      // ps failed — return empty map, all PTYs will show idle
+      // ps/powershell failed — return empty map, all PTYs will show idle
     }
     return map;
   }

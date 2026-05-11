@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { TerminalPane } from './TerminalPane';
 import { ProjectOverview } from './ProjectOverview';
+import { openInIde } from '../lib/openInIde';
 import {
   FolderOpen,
   GitBranch,
@@ -15,15 +16,11 @@ import type {
   Task,
   LinkedItem,
   RemoteControlState,
-  ContextUsage,
   PullRequestInfo,
   GitStatus,
 } from '../../shared/types';
 import { linkedItemUrl, isAdoRemote, branchUrl } from '../../shared/urls';
 import { Tooltip } from './ui/Tooltip';
-
-import { formatTokens } from '../../shared/format';
-import { UsageBarInline, usageTextColor } from './ui/UsageBar';
 
 function LinkedItemBadges({
   items,
@@ -81,7 +78,6 @@ interface MainContentProps {
   taskActivity?: Record<string, import('../../shared/types').ActivityInfo>;
   unseenTaskIds?: Set<string>;
   remoteControlStates?: Record<string, RemoteControlState>;
-  contextUsage?: Record<string, ContextUsage>;
   onSelectTask?: (id: string) => void;
   onEnableRemoteControl?: (taskId: string) => void;
   onNewTask?: () => void;
@@ -104,7 +100,6 @@ export function MainContent({
   taskActivity = {},
   unseenTaskIds,
   remoteControlStates = {},
-  contextUsage = {},
   onSelectTask,
   onEnableRemoteControl,
   onNewTask,
@@ -118,7 +113,6 @@ export function MainContent({
   gitStatus,
 }: MainContentProps) {
   const [prInfo, setPrInfo] = useState<PullRequestInfo | null>(null);
-
   useEffect(() => {
     setPrInfo(null);
 
@@ -203,6 +197,7 @@ export function MainContent({
       : null;
 
   const branchTooltip = gitStatus?.hasUpstream ? 'Branch' : 'Branch (no upstream detected)';
+  const BranchIcon = activeTask.useWorktree ? FolderGit2 : GitBranch;
 
   const branchLabel = currentBranchUrl ? (
     <a
@@ -217,8 +212,14 @@ export function MainContent({
     <span className="text-[11px] font-mono truncate">{currentBranch}</span>
   );
 
-  const activeCtxRaw = activeTask ? contextUsage[activeTask.id] : undefined;
-  const activeCtx = activeCtxRaw && activeCtxRaw.percentage > 0 ? activeCtxRaw : undefined;
+  const branchBadge = (
+    <Tooltip content={branchTooltip}>
+      <div className="flex items-center gap-1.5 text-foreground/60 min-w-0 flex-shrink max-w-[180px]">
+        <BranchIcon size={11} strokeWidth={2} className="flex-shrink-0" />
+        {branchLabel}
+      </div>
+    </Tooltip>
+  );
 
   const taskHeader = (
     <div
@@ -267,21 +268,7 @@ export function MainContent({
               </button>
             ))}
           </div>
-          {activeTask.useWorktree ? (
-            <Tooltip content={branchTooltip}>
-              <div className="flex items-center gap-1.5 text-foreground/60 min-w-0 flex-shrink max-w-[180px]">
-                <FolderGit2 size={11} strokeWidth={2} className="flex-shrink-0" />
-                {branchLabel}
-              </div>
-            </Tooltip>
-          ) : (
-            <Tooltip content={branchTooltip}>
-              <div className="flex items-center gap-1.5 text-foreground/60 min-w-0 flex-shrink max-w-[180px]">
-                <GitBranch size={11} strokeWidth={2} className="flex-shrink-0" />
-                {branchLabel}
-              </div>
-            </Tooltip>
-          )}
+          {branchBadge}
         </>
       ) : (
         <>
@@ -298,39 +285,7 @@ export function MainContent({
             />
           )}
           <div className="ml-auto flex items-center gap-1.5">
-            {/* Context usage indicator */}
-            {activeCtx && (
-              <div
-                className="flex items-center gap-1.5"
-                title={`Context: ${activeCtx.used.toLocaleString()} / ${activeCtx.total.toLocaleString()} tokens (${Math.round(activeCtx.percentage)}%)`}
-              >
-                <UsageBarInline percentage={activeCtx.percentage} />
-                <span
-                  className={`text-[10px] tabular-nums ${
-                    activeCtx.percentage >= 80
-                      ? 'text-red-400 font-medium'
-                      : usageTextColor(activeCtx.percentage)
-                  }`}
-                >
-                  {formatTokens(activeCtx.used)}/{formatTokens(activeCtx.total)}
-                </span>
-              </div>
-            )}
-            {activeTask.useWorktree ? (
-              <Tooltip content={branchTooltip}>
-                <div className="flex items-center gap-1.5 text-foreground/60 min-w-0 flex-shrink max-w-[180px]">
-                  <FolderGit2 size={11} strokeWidth={2} className="flex-shrink-0" />
-                  {branchLabel}
-                </div>
-              </Tooltip>
-            ) : (
-              <Tooltip content={branchTooltip}>
-                <div className="flex items-center gap-1.5 text-foreground/60 min-w-0 flex-shrink max-w-[180px]">
-                  <GitBranch size={11} strokeWidth={2} className="flex-shrink-0" />
-                  {branchLabel}
-                </div>
-              </Tooltip>
-            )}
+            {branchBadge}
             {taskActivity[activeTask.id] && (
               <Tooltip content="Remote control">
                 <button
@@ -347,11 +302,7 @@ export function MainContent({
             )}
             <Tooltip content="Open in IDE">
               <button
-                onClick={() => {
-                  const stored = localStorage.getItem('preferredIDE');
-                  const ide = stored === 'cursor' || stored === 'code' ? stored : undefined;
-                  window.electronAPI.openInIDE({ folderPath: activeTask.path, ide });
-                }}
+                onClick={() => openInIde(activeTask.path)}
                 className="p-1 rounded-md transition-colors text-muted-foreground hover:text-foreground hover:bg-accent/60"
               >
                 <Code2 size={14} strokeWidth={1.8} />
@@ -387,7 +338,7 @@ export function MainContent({
   return (
     <div className="h-full flex flex-col bg-background">
       {taskHeader}
-      <div className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 relative">
         <TerminalPane
           key={activeTask.id}
           id={activeTask.id}
