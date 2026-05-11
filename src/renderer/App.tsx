@@ -8,6 +8,7 @@ import {
 import { LeftSidebar } from './components/LeftSidebar';
 import { MainContent } from './components/MainContent';
 import { FileChangesPanel } from './components/FileChangesPanel';
+import { StructuredView } from './components/structured/StructuredView';
 import { ShellDrawerWrapper } from './components/ShellDrawerWrapper';
 import { DiffViewer } from './components/DiffViewer';
 import { CommitGraphModal } from './components/CommitGraph/CommitGraphModal';
@@ -377,6 +378,14 @@ export function App() {
     localStorage.setItem('showContextUsageOnTaskCards', String(showContextUsageOnTaskCards));
   }, [showContextUsageOnTaskCards]);
 
+  // Right-panel: structured session view (opt-in, off by default)
+  const [showStructuredView, setShowStructuredView] = useState(
+    () => localStorage.getItem('showStructuredView') === 'true',
+  );
+  useEffect(() => {
+    localStorage.setItem('showStructuredView', String(showStructuredView));
+  }, [showStructuredView]);
+
   // Rotation — tasks the user cycles through with Ctrl+Tab
   const [showActiveTasksSection, setShowActiveTasksSection] = useState(
     () => localStorage.getItem('showActiveTasksSection') !== 'false',
@@ -413,6 +422,9 @@ export function App() {
   });
   const [changesPanelCollapsed, setChangesPanelCollapsed] = useState(() => {
     return localStorage.getItem('changesPanelCollapsed') === 'true';
+  });
+  const [rightPanelTab, setRightPanelTab] = useState<'changes' | 'structured'>(() => {
+    return (localStorage.getItem('rightPanelTab') as 'changes' | 'structured') || 'structured';
   });
 
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
@@ -1741,6 +1753,31 @@ export function App() {
                     collapsed={changesPanelCollapsed}
                     onToggleCollapse={toggleChangesPanel}
                     onShowCommitGraph={() => setShowCommitGraph(true)}
+                    tabs={
+                      showStructuredView
+                        ? {
+                            options: [
+                              { id: 'structured', label: 'Tool use' },
+                              { id: 'changes', label: 'Changes' },
+                            ],
+                            activeId: changesPanelCollapsed ? 'changes' : rightPanelTab,
+                            onChange: (id) => {
+                              const next = id === 'structured' ? 'structured' : 'changes';
+                              setRightPanelTab(next);
+                              localStorage.setItem('rightPanelTab', next);
+                            },
+                          }
+                        : undefined
+                    }
+                    alternateBody={
+                      showStructuredView && activeTask ? (
+                        <StructuredView
+                          key={`structured-${activeTask.id}`}
+                          taskId={activeTask.id}
+                          taskPath={activeTask.path}
+                        />
+                      ) : null
+                    }
                   />
                 </ShellDrawerWrapper>
               </div>
@@ -1842,6 +1879,8 @@ export function App() {
           onShowUsageInlineChange={setShowUsageInline}
           showContextUsageOnTaskCards={showContextUsageOnTaskCards}
           onShowContextUsageOnTaskCardsChange={setShowContextUsageOnTaskCards}
+          showStructuredView={showStructuredView}
+          onShowStructuredViewChange={setShowStructuredView}
           showActiveTasksSection={showActiveTasksSection}
           onShowActiveTasksSectionChange={setShowActiveTasksSection}
           shellDrawerEnabled={shellDrawerEnabled}
