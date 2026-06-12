@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { type WebContents, app } from 'electron';
 import { activityMonitor } from './ActivityMonitor';
 import { hookServer } from './HookServer';
+import { DatabaseService } from './DatabaseService';
 import type { TaskContextMeta } from '@shared/types';
 
 const execFileAsync = promisify(execFile);
@@ -15,9 +16,15 @@ interface PtyRecord {
   cwd: string;
   isDirectSpawn: boolean;
   owner: WebContents | null;
+  spawnedAt?: number;
+  resumedSessionId?: string | null;
 }
 
 const ptys = new Map<string, PtyRecord>();
+
+// If a `--resume <id>` spawn exits within this window, treat the stored session
+// as stale/missing, clear it, and respawn fresh.
+const STALE_RESUME_MS = 3000;
 
 const DASH_DEFAULT_ATTRIBUTION =
   '\n\nCo-Authored-By: Claude <noreply@anthropic.com> via Dash <dash@syv.ai>';
@@ -346,7 +353,6 @@ export async function startDirectPty(options: {
   cols: number;
   rows: number;
   autoApprove?: boolean;
-  resume?: boolean;
   isDark?: boolean;
   sender?: WebContents;
 }): Promise<{
@@ -377,9 +383,10 @@ export async function startDirectPty(options: {
     throw new Error('Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code');
   }
 
+  const storedSessionId = DatabaseService.getTaskSessionId(options.id);
   const args: string[] = [];
-  if (options.resume) {
-    args.push('-c', '-r');
+  if (storedSessionId) {
+    args.push('--resume', storedSessionId);
   }
   if (options.autoApprove) {
     args.push('--dangerously-skip-permissions');
@@ -401,6 +408,8 @@ export async function startDirectPty(options: {
     cwd: options.cwd,
     isDirectSpawn: true,
     owner: options.sender || null,
+    spawnedAt: Date.now(),
+    resumedSessionId: storedSessionId,
   };
 
   ptys.set(options.id, record);
@@ -423,6 +432,29 @@ export async function startDirectPty(options: {
     if (ptys.get(options.id) !== record) return;
     activityMonitor.unregister(options.id);
     remoteControlService.unregister(options.id);
+
+    // A resume spawn that exits almost immediately means the stored session is
+    // stale (pruned/deleted). Clear it and respawn fresh instead of surfacing
+    // the exit to the renderer (which would drop to a shell fallback).
+    const exitedEarly = Date.now() - (record.spawnedAt ?? 0) < STALE_RESUME_MS;
+    if (record.resumedSessionId && exitedEarly) {
+      console.error(
+        `[ptyManager] Resume of session ${record.resumedSessionId} failed (exit ${exitCode}); clearing and respawning fresh for ${options.id}`,
+      );
+      DatabaseService.setTaskSessionId(options.id, null);
+      ptys.delete(options.id);
+      void startDirectPty({
+        id: options.id,
+        cwd: options.cwd,
+        cols: options.cols,
+        rows: options.rows,
+        autoApprove: options.autoApprove,
+        isDark: options.isDark,
+        sender: record.owner ?? undefined,
+      });
+      return;
+    }
+
     if (record.owner && !record.owner.isDestroyed()) {
       record.owner.send(`pty:exit:${options.id}`, { exitCode, signal });
     }
