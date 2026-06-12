@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { activityMonitor } from './ActivityMonitor';
 import { getDb } from '../db/client';
 import { tasks } from '../db/schema';
+import { DatabaseService } from './DatabaseService';
 
 class HookServerImpl {
   private server: http.Server | null = null;
@@ -125,6 +126,31 @@ class HookServerImpl {
               }
             } catch (err) {
               console.error('[HookServer] Failed to parse notification body:', err);
+            }
+            res.writeHead(200);
+            res.end('ok');
+          });
+          return;
+        }
+
+        // Session-capture hook — receives the SessionStart payload as JSON on
+        // stdin. We persist session_id so the task can be resumed deterministically
+        // with `claude --resume <id>`. ptyId is the task id.
+        if (req.method === 'POST' && ptyId && url.pathname === '/hook/session') {
+          let body = '';
+          req.on('data', (chunk: Buffer) => {
+            body += chunk.toString();
+          });
+          req.on('end', () => {
+            try {
+              const payload = JSON.parse(body);
+              const sessionId: unknown = payload.session_id;
+              if (typeof sessionId === 'string' && sessionId.length > 0) {
+                DatabaseService.setTaskSessionId(ptyId, sessionId);
+                console.error(`[HookServer] Captured session id for ptyId=${ptyId}: ${sessionId}`);
+              }
+            } catch (err) {
+              console.error('[HookServer] Failed to parse session body:', err);
             }
             res.writeHead(200);
             res.end('ok');
