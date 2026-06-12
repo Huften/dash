@@ -131,5 +131,11 @@ export function runMigrations(): void {
     /* already exists */
   }
 
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN claude_session_id TEXT`);
+  } catch {
+    /* already exists */
+  }
+
   rawDb.pragma('foreign_keys = ON');
 }
