@@ -161,6 +161,24 @@ export class DatabaseService {
       .run();
   }
 
+  static getTaskSessionId(taskId: string): string | null {
+    const db = getDb();
+    const row = db
+      .select({ claudeSessionId: tasks.claudeSessionId })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .get();
+    return row?.claudeSessionId ?? null;
+  }
+
+  static setTaskSessionId(taskId: string, sessionId: string | null): void {
+    const db = getDb();
+    db.update(tasks)
+      .set({ claudeSessionId: sessionId, updatedAt: new Date().toISOString() })
+      .where(eq(tasks.id, taskId))
+      .run();
+  }
+
   // ── Conversations ────────────────────────────────────────
 
   static getConversations(taskId: string): Conversation[] {
@@ -232,6 +250,7 @@ export class DatabaseService {
       status: row.status,
       useWorktree: row.useWorktree ?? true,
       autoApprove: row.autoApprove ?? false,
+      claudeSessionId: row.claudeSessionId ?? null,
       branchCreatedByDash: row.branchCreatedByDash ?? false,
       linkedItems,
       frontendPort: row.frontendPort ?? null,
