@@ -279,21 +279,24 @@ function writeHookSettings(cwd: string, ptyId: string): void {
     ],
   };
 
-  // Auto-detect task-context.json and inject SessionStart hook if it exists
+  // Always capture the Claude session id on SessionStart so the task can be
+  // resumed deterministically later. Omitting the matcher runs this for every
+  // SessionStart source (startup, resume, clear, compact), so the stored id
+  // self-heals if Claude forks a new session.
+  const sessionCaptureCommand = `curl -s --connect-timeout 2 -X POST -H "Content-Type: application/json" -d @- http://127.0.0.1:${port}/hook/session?ptyId=${ptyId}`;
+  const sessionStartEntries: unknown[] = [
+    { hooks: [{ type: 'command', command: sessionCaptureCommand }] },
+  ];
+
+  // Inject task-context.json on startup only, if present.
   const contextPath = path.join(claudeDir, 'task-context.json');
   if (fs.existsSync(contextPath)) {
-    hookSettings.SessionStart = [
-      {
-        matcher: 'startup',
-        hooks: [
-          {
-            type: 'command',
-            command: `cat "${contextPath}"`,
-          },
-        ],
-      },
-    ];
+    sessionStartEntries.push({
+      matcher: 'startup',
+      hooks: [{ type: 'command', command: `cat "${contextPath}"` }],
+    });
   }
+  hookSettings.SessionStart = sessionStartEntries;
 
   try {
     if (!fs.existsSync(claudeDir)) {
