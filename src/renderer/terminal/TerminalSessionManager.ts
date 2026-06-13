@@ -325,9 +325,9 @@ export class TerminalSessionManager {
         if (gen !== this.attachGeneration) return;
 
         // If we reattached to an existing direct-spawn PTY (e.g. after CMD+R),
-        // kill it and spawn fresh with resume. Ink's internal cursor state can't
-        // be recovered via SIGWINCH, but a fresh Claude Code process with
-        // --continue --resume preserves the session and gives a clean TUI init.
+        // kill it and spawn fresh. Ink's internal cursor state can't be
+        // recovered via SIGWINCH, but a fresh Claude Code process resumes the
+        // stored session (--resume <id>, decided in main) with a clean TUI init.
         if (result.reattached && result.isDirectSpawn) {
           this._isRestarting = true;
           this.readyFired = false;
