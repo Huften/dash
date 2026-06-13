@@ -389,7 +389,7 @@ export async function startDirectPty(options: {
     args.push('--resume', storedSessionId);
   }
   if (options.autoApprove) {
-    args.push('--dangerously-skip-permissions');
+    args.push('--permission-mode', 'auto');
   }
   const env = buildDirectEnv(options.isDark ?? true);
 
