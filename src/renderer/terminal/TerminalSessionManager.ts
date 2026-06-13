@@ -419,7 +419,13 @@ export class TerminalSessionManager {
         // causing stray "O"/"I" chars in the input field.
         this.terminal.write('\x1b[?1004l');
         this.fitAddon.fit();
-        this.terminal.focus();
+        // Only the primary (Claude) terminal grabs focus on attach. The shell
+        // drawer re-attaches on every task switch; auto-focusing it here would
+        // steal focus from the Claude terminal when clicking a task. The drawer
+        // focuses itself explicitly when the user expands it.
+        if (!this.shellOnly) {
+          this.terminal.focus();
+        }
 
         if (this.savedViewportY !== null) {
           this.forceScrollToLine(this.savedViewportY);
