@@ -3,8 +3,12 @@
   "version": "0.3.2",
   "description": "Dash — Desktop app for Claude Code with git worktree management",
   "main": "dist/main/main/entry.js",
+  "packageManager": "pnpm@10.32.1",
   "author": "mhenrichsen",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "concurrently -n main,renderer -c blue,green \"pnpm dev:main\" \"pnpm dev:renderer\"",
     "dev:main": "tsc -p tsconfig.main.json && electron dist/main/main/entry.js --dev",
