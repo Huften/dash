@@ -13,6 +13,7 @@
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
     "rebuild": "electron-rebuild -f -w node-pty,better-sqlite3",
+    "postinstall": "node scripts/postinstall.mjs",
     "package:mac": "pnpm build && electron-builder --mac",
     "package:linux": "pnpm build && electron-builder --linux",
     "type-check": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
