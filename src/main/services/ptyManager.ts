@@ -430,18 +430,20 @@ export async function startDirectPty(options: {
   proc.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
     // Skip if this PTY was replaced by a new spawn (kill+restart on reattach)
     if (ptys.get(options.id) !== record) return;
-    activityMonitor.unregister(options.id);
-    remoteControlService.unregister(options.id);
 
-    // A resume spawn that exits almost immediately means the stored session is
-    // stale (pruned/deleted). Clear it and respawn fresh instead of surfacing
-    // the exit to the renderer (which would drop to a shell fallback).
+    // A stale/deleted stored session makes `claude --resume <id>` fail fast with
+    // a non-zero exit. ONLY that case is auto-recovered: we clear the id and
+    // respawn fresh. A clean exit (code 0) or a signal kill means the user
+    // intentionally quit Claude — surface it; never resurrect it.
     const exitedEarly = Date.now() - (record.spawnedAt ?? 0) < STALE_RESUME_MS;
-    if (record.resumedSessionId && exitedEarly) {
+    const resumeFailed = !!record.resumedSessionId && exitedEarly && exitCode !== 0 && !signal;
+    if (resumeFailed) {
       console.error(
         `[ptyManager] Resume of session ${record.resumedSessionId} failed (exit ${exitCode}); clearing and respawning fresh for ${options.id}`,
       );
       DatabaseService.setTaskSessionId(options.id, null);
+      // Keep the activity/remote-control registrations: the fresh spawn re-registers
+      // the same id, so the task doesn't flicker in the UI during recovery.
       ptys.delete(options.id);
       void startDirectPty({
         id: options.id,
@@ -455,6 +457,8 @@ export async function startDirectPty(options: {
       return;
     }
 
+    activityMonitor.unregister(options.id);
+    remoteControlService.unregister(options.id);
     if (record.owner && !record.owner.isDestroyed()) {
       record.owner.send(`pty:exit:${options.id}`, { exitCode, signal });
     }
