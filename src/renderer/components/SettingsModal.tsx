@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Check, AlertCircle, Sun, Moon, RotateCcw, Download, FolderOpen } from 'lucide-react';
+import { Tooltip } from './ui/Tooltip';
 import type { KeyBindingMap, KeyBinding } from '../keybindings';
 import {
   getBindingKeys,
@@ -516,22 +517,23 @@ export function SettingsModal({
                     placeholder="Custom CLI path (leave empty for auto-detect)"
                     className="flex-1 px-3 py-2 rounded-lg text-[12px] font-mono border border-border/60 bg-transparent text-foreground placeholder:text-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/40"
                   />
-                  <button
-                    onClick={() => {
-                      window.electronAPI.browseClaudeCli().then((resp) => {
-                        if (resp.success && resp.data) {
-                          setCustomClaudePath(resp.data);
-                          window.electronAPI.setClaudeCliPath(resp.data).then((r) => {
-                            if (r.success && r.data) setClaudeInfo(r.data);
-                          });
-                        }
-                      });
-                    }}
-                    className="p-2 rounded-lg border border-border/60 text-foreground/60 hover:bg-accent/40 hover:text-foreground transition-all duration-150"
-                    title="Browse for Claude CLI"
-                  >
-                    <FolderOpen size={14} strokeWidth={1.8} />
-                  </button>
+                  <Tooltip label="Browse for Claude CLI">
+                    <button
+                      onClick={() => {
+                        window.electronAPI.browseClaudeCli().then((resp) => {
+                          if (resp.success && resp.data) {
+                            setCustomClaudePath(resp.data);
+                            window.electronAPI.setClaudeCliPath(resp.data).then((r) => {
+                              if (r.success && r.data) setClaudeInfo(r.data);
+                            });
+                          }
+                        });
+                      }}
+                      className="p-2 rounded-lg border border-border/60 text-foreground/60 hover:bg-accent/40 hover:text-foreground transition-all duration-150"
+                    >
+                      <FolderOpen size={14} strokeWidth={1.8} />
+                    </button>
+                  </Tooltip>
                   <button
                     onClick={() => {
                       const value = customClaudePath.trim() || null;
@@ -748,13 +750,14 @@ export function SettingsModal({
                               onChange={(updated) => handleBindingChange(binding.id, updated)}
                             />
                             {modified && (
-                              <button
-                                onClick={() => handleResetOne(binding.id)}
-                                className="p-1.5 rounded-md text-foreground/30 hover:text-foreground hover:bg-accent/60 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                                title="Reset to default"
-                              >
-                                <RotateCcw size={11} strokeWidth={2} />
-                              </button>
+                              <Tooltip label="Reset to default">
+                                <button
+                                  onClick={() => handleResetOne(binding.id)}
+                                  className="p-1.5 rounded-md text-foreground/30 hover:text-foreground hover:bg-accent/60 opacity-0 group-hover:opacity-100 transition-all duration-150"
+                                >
+                                  <RotateCcw size={11} strokeWidth={2} />
+                                </button>
+                              </Tooltip>
                             )}
                           </div>
                         </div>

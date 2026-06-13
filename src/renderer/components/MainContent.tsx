@@ -3,6 +3,7 @@ import { TerminalPane } from './TerminalPane';
 import { Terminal, FolderOpen, GitBranch, GitMerge, Globe, Network } from 'lucide-react';
 import type { Project, Task, RemoteControlState } from '../../shared/types';
 import { linkedItemUrl } from '../../shared/urls';
+import { Tooltip } from './ui/Tooltip';
 
 interface MainContentProps {
   activeTask: Task | null;
@@ -128,13 +129,14 @@ export function MainContent({
             <GitBranch size={11} strokeWidth={2} />
             <span className="text-[11px] font-mono">{activeTask.branch}</span>
             {activeTask.useWorktree && (
-              <button
-                onClick={() => onOpenMerge?.(activeTask)}
-                className="p-0.5 rounded hover:bg-accent/60 text-muted-foreground/50 hover:text-foreground transition-colors"
-                title="Merge branch"
-              >
-                <GitMerge size={12} strokeWidth={1.8} />
-              </button>
+              <Tooltip label="Merge branch">
+                <button
+                  onClick={() => onOpenMerge?.(activeTask)}
+                  className="p-0.5 rounded hover:bg-accent/60 text-muted-foreground/50 hover:text-foreground transition-colors"
+                >
+                  <GitMerge size={12} strokeWidth={1.8} />
+                </button>
+              </Tooltip>
             )}
           </div>
           {(activeTask.frontendPort || activeTask.backendPort) && (
@@ -155,40 +157,41 @@ export function MainContent({
               {activeTask.linkedItems.map((item) => {
                 const url = linkedItemUrl(item, activeProject?.gitRemote ?? null);
                 return url ? (
-                  <a
-                    key={`${item.provider}-${item.id}`}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium hover:bg-primary/20 transition-colors"
-                    title={item.title || undefined}
-                  >
-                    #{item.id}
-                  </a>
+                  <Tooltip key={`${item.provider}-${item.id}`} label={item.title || undefined}>
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium hover:bg-primary/20 transition-colors"
+                    >
+                      #{item.id}
+                    </a>
+                  </Tooltip>
                 ) : (
-                  <span
-                    key={`${item.provider}-${item.id}`}
-                    className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium"
-                    title={item.title || undefined}
-                  >
-                    #{item.id}
-                  </span>
+                  <Tooltip key={`${item.provider}-${item.id}`} label={item.title || undefined}>
+                    <span
+                      className="px-1.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-medium"
+                    >
+                      #{item.id}
+                    </span>
+                  </Tooltip>
                 );
               })}
             </div>
           ) : null}
           {taskActivity[activeTask.id] && (
-            <button
-              onClick={() => onEnableRemoteControl?.(activeTask.id)}
-              className={`ml-auto p-1 rounded-md transition-colors ${
-                remoteControlStates[activeTask.id]
-                  ? 'text-primary hover:bg-primary/10'
-                  : 'text-muted-foreground/50 hover:text-foreground hover:bg-accent/60'
-              }`}
-              title="Remote control"
-            >
-              <Globe size={14} strokeWidth={1.8} />
-            </button>
+            <Tooltip label="Remote control">
+              <button
+                onClick={() => onEnableRemoteControl?.(activeTask.id)}
+                className={`ml-auto p-1 rounded-md transition-colors ${
+                  remoteControlStates[activeTask.id]
+                    ? 'text-primary hover:bg-primary/10'
+                    : 'text-muted-foreground/50 hover:text-foreground hover:bg-accent/60'
+                }`}
+              >
+                <Globe size={14} strokeWidth={1.8} />
+              </button>
+            </Tooltip>
           )}
         </>
       )}

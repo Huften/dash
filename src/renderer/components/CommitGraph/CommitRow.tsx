@@ -4,6 +4,7 @@ import type { GraphCommit, CommitRef } from '../../../shared/types';
 import type { TaskBranchInfo } from './CommitGraphModal';
 import { getLaneColor } from './graphColors';
 import { ROW_HEIGHT } from './graphLayout';
+import { Tooltip } from '../ui/Tooltip';
 
 interface CommitRowProps {
   graphCommit: GraphCommit;
@@ -63,25 +64,27 @@ function RefBadge({
 
   if (color) {
     return (
-      <span
-        className={badgeClass}
-        style={{ backgroundColor: `color-mix(in srgb, ${color} 20%, transparent)`, color }}
-        title={title}
-        onClick={clickable ? (e) => { e.stopPropagation(); onClickTask(taskInfo.id); } : undefined}
-      >
-        {content}
-      </span>
+      <Tooltip label={title}>
+        <span
+          className={badgeClass}
+          style={{ backgroundColor: `color-mix(in srgb, ${color} 20%, transparent)`, color }}
+          onClick={clickable ? (e) => { e.stopPropagation(); onClickTask(taskInfo.id); } : undefined}
+        >
+          {content}
+        </span>
+      </Tooltip>
     );
   }
 
   return (
-    <span
-      className={`${badgeClass} bg-accent/80 text-foreground`}
-      title={title}
-      onClick={clickable ? (e) => { e.stopPropagation(); onClickTask(taskInfo.id); } : undefined}
-    >
-      {content}
-    </span>
+    <Tooltip label={title}>
+      <span
+        className={`${badgeClass} bg-accent/80 text-foreground`}
+        onClick={clickable ? (e) => { e.stopPropagation(); onClickTask(taskInfo.id); } : undefined}
+      >
+        {content}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -109,18 +112,19 @@ function GithubLink({
   children: React.ReactNode;
 }) {
   return (
-    <a
-      href={href}
-      className={`${className} hover:underline`}
-      onClick={(e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        window.electronAPI.openExternal(href);
-      }}
-      title={href}
-    >
-      {children}
-    </a>
+    <Tooltip label={href}>
+      <a
+        href={href}
+        className={`${className} hover:underline`}
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          window.electronAPI.openExternal(href);
+        }}
+      >
+        {children}
+      </a>
+    </Tooltip>
   );
 }
 

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Tooltip } from './Tooltip';
 
 type IconButtonSize = 'sm' | 'md';
 
@@ -30,12 +31,14 @@ export function IconButton({
   children,
 }: IconButtonProps) {
   return (
-    <button
-      onClick={onClick}
-      className={`rounded-md transition-colors duration-150 ${sizeStyles[size]} ${variantStyles[variant]} ${className}`}
-      title={title}
-    >
-      {children}
-    </button>
+    <Tooltip label={title}>
+      <button
+        onClick={onClick}
+        aria-label={title}
+        className={`rounded-md transition-colors duration-150 ${sizeStyles[size]} ${variantStyles[variant]} ${className}`}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }

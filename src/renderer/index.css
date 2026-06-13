@@ -302,6 +302,18 @@
   animation: commitRowIn 200ms ease-out both;
 }
 
+/* ── Tooltip ──────────────────────────────────────────────── */
+
+/* Radix tooltip content: subtle scale+fade entrance, anchored to the side the
+   tooltip opens from. Only the open state animates (Radix unmounts on close). */
+.tooltip-content {
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+}
+.tooltip-content[data-state='delayed-open'],
+.tooltip-content[data-state='instant-open'] {
+  animation: scaleIn 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 /* ── Status Pulse ─────────────────────────────────────────── */
 
 .status-pulse {
