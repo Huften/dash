@@ -30,17 +30,26 @@ Download the latest build from [Releases](https://github.com/syv-ai/dash/release
 
 ## Prerequisites
 
-- Node.js 22+
-- [pnpm](https://pnpm.io/)
+- Node.js 22+ (run `corepack enable` to get the pinned pnpm automatically)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
 - Git
+
+**Windows:** the native modules (`better-sqlite3`, `node-pty`) compile from source, which needs
+Python and the MSVC C++ build tools. Run `pnpm doctor` — it detects what's missing and installs
+it for you via winget (or choco). Auto-install may need Administrator rights; run it from an
+elevated terminal if it reports a permission failure.
 
 ## Setup
 
 ```bash
 pnpm install
-npx electron-rebuild -f -w node-pty,better-sqlite3  # rebuild native modules for Electron
 ```
+
+That's it — `pnpm install` rebuilds the native modules for Electron automatically. If the rebuild
+fails, run `pnpm doctor` to check your toolchain. (On Windows, close the app first if it's running —
+it locks the native modules.)
+
+Windows is supported for development. Packaged releases target macOS arm64 and Linux x64.
 
 ## Development
 

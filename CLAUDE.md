@@ -7,8 +7,8 @@ Electron desktop app for running Claude Code across multiple projects, each task
 ## Commands
 
 ```bash
-pnpm install              # install deps
-npx electron-rebuild -f -w node-pty,better-sqlite3  # rebuild native modules for Electron
+pnpm install              # install deps + auto-rebuild native modules for Electron
+pnpm doctor               # check prerequisites (auto-installs Windows build tools)
 pnpm dev                  # Vite on :3000 + Electron
 pnpm dev:main             # main process only
 pnpm dev:renderer         # Vite dev server only
@@ -122,4 +122,4 @@ GitHub Actions (`.github/workflows/build.yml`): triggers on push to main + manua
 
 ## Requirements
 
-Node.js 22+ (`.nvmrc`), pnpm (`shamefully-hoist` in `.npmrc`), Claude Code CLI, Git. macOS arm64 or Linux x64.
+Node.js 22+ (`.nvmrc`), pnpm via Corepack (pinned in `packageManager`), Claude Code CLI, Git. Develop on macOS arm64, Linux x64, or Windows; packaged releases target macOS arm64 and Linux x64.
