@@ -83,6 +83,17 @@ git commit -m "feat(setup): auto-rebuild native modules on install via postinsta
 
 ### Task 2: `pnpm doctor` diagnostics + Windows auto-install
 
+> **Implementation note (2026-06-14):** During verification on Windows, two bugs in
+> the snippet below were found and fixed in the shipped `scripts/doctor.mjs`:
+> (1) `vswhere` must be executed with `{ shell: false }` — routing an absolute path
+> containing spaces through `cmd.exe` (`shell: true`) splits it at the first space and
+> fails, producing a false "vctools missing" and a spurious install. (2) `vswhere`'s
+> path is resolved by probing `%ProgramFiles(x86)%` then the hardcoded
+> `C:\Program Files (x86)\...` location (never the non-x86 `ProgramFiles`).
+> (3) winget installs are issued as a single fully-quoted command string so the
+> `--override "..."` value survives cmd tokenization. The committed script is the
+> source of truth.
+
 **Files:**
 
 - Create: `scripts/doctor.mjs`
