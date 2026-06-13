@@ -308,25 +308,20 @@ export class TerminalSessionManager {
           }
         }
       } else {
-        // Claude Code mode: try direct spawn, fall back to shell
-        let resume = false;
+        // Claude Code mode: try direct spawn, fall back to shell. Resume is
+        // decided entirely in the main process from the stored session id.
         let existingSnapshot: TerminalSnapshot | null = null;
         try {
           const snapshotResp = await window.electronAPI.ptyGetSnapshot(this.id);
           if (snapshotResp.success && snapshotResp.data) {
             existingSnapshot = snapshotResp.data;
           }
-          // Always resume if a Claude session exists (e.g. after app restart)
-          const sessionResp = await window.electronAPI.ptyHasClaudeSession(this.cwd);
-          if (sessionResp.success && sessionResp.data) {
-            resume = true;
-          }
         } catch {
           // Best effort
         }
         if (gen !== this.attachGeneration) return;
 
-        let result = await this.startPty(resume);
+        let result = await this.startPty();
         if (gen !== this.attachGeneration) return;
 
         // If we reattached to an existing direct-spawn PTY (e.g. after CMD+R),
@@ -341,7 +336,7 @@ export class TerminalSessionManager {
           this.dataBuffer = [];
           window.electronAPI.ptyKill(this.id);
           this.ptyStarted = false;
-          result = await this.startPty(resume);
+          result = await this.startPty();
           if (gen !== this.attachGeneration) return;
 
           // Fallback: hide overlay after 10s even if no data arrives
@@ -362,7 +357,7 @@ export class TerminalSessionManager {
         }
 
         // Show info line when context was injected via SessionStart hook
-        if (result.taskContextMeta && !result.reattached && !resume) {
+        if (result.taskContextMeta && !result.reattached) {
           const { githubIssues, adoWorkItems } = result.taskContextMeta;
 
           if (githubIssues && githubIssues.length > 0) {
@@ -610,7 +605,7 @@ export class TerminalSessionManager {
     }
   }
 
-  private async startPty(resume: boolean = false): Promise<{
+  private async startPty(): Promise<{
     reattached: boolean;
     isDirectSpawn: boolean;
     taskContextMeta: import('../../shared/types').TaskContextMeta | null;
@@ -629,7 +624,6 @@ export class TerminalSessionManager {
       cols,
       rows,
       autoApprove: this.autoApprove,
-      resume,
       isDark: this.isDark,
     });
 

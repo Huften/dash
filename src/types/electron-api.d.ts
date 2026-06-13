@@ -104,7 +104,6 @@ export interface ElectronAPI {
     cols: number;
     rows: number;
     autoApprove?: boolean;
-    resume?: boolean;
     isDark?: boolean;
   }) => Promise<
     IpcResponse<{
@@ -146,9 +145,6 @@ export interface ElectronAPI {
   ptyGetSnapshot: (id: string) => Promise<IpcResponse<TerminalSnapshot | null>>;
   ptySaveSnapshot: (id: string, payload: TerminalSnapshot) => void;
   ptyClearSnapshot: (id: string) => Promise<IpcResponse<void>>;
-
-  // Session detection
-  ptyHasClaudeSession: (cwd: string) => Promise<IpcResponse<boolean>>;
 
   // Task context for SessionStart hook
   ptyWriteTaskContext: (args: {

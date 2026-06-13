@@ -122,7 +122,6 @@ export interface PtyOptions {
   cols: number;
   rows: number;
   autoApprove?: boolean;
-  resume?: boolean;
 }
 
 export interface TerminalSnapshot {
