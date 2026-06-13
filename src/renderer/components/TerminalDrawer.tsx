@@ -67,9 +67,15 @@ export function TerminalDrawer({ taskId, cwd, collapsed, label = 'Terminal', onC
     };
   }, [shellId, cwd]);
 
-  // Focus terminal when expanding
+  // Focus the shell terminal only when the user actively expands the drawer
+  // (collapsed true → false). We must NOT focus on shellId change (task switch):
+  // the drawer stays expanded across tasks, and grabbing focus there would steal
+  // it from the Claude terminal when opening a task.
+  const prevCollapsedRef = useRef(collapsed);
   useEffect(() => {
-    if (!collapsed) {
+    const wasCollapsed = prevCollapsedRef.current;
+    prevCollapsedRef.current = collapsed;
+    if (wasCollapsed && !collapsed) {
       const session = sessionRegistry.get(shellId);
       if (session) {
         requestAnimationFrame(() => session.focus());
