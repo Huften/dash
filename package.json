@@ -16,6 +16,7 @@
     "package:mac": "pnpm build && electron-builder --mac",
     "package:linux": "pnpm build && electron-builder --linux",
     "type-check": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "doctor": "node scripts/doctor.mjs",
     "drizzle:generate": "drizzle-kit generate",
     "prepare": "husky"
   },
