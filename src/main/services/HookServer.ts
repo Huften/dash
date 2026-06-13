@@ -149,6 +149,15 @@ class HookServerImpl {
                 DatabaseService.setTaskSessionId(ptyId, sessionId);
                 console.error(`[HookServer] Captured session id for ptyId=${ptyId}: ${sessionId}`);
               }
+              // Also remember the permission mode Claude is in, so resume can
+              // restore it via --permission-mode (the user may have cycled it).
+              const permissionMode: unknown = payload.permission_mode;
+              if (typeof permissionMode === 'string' && permissionMode.length > 0) {
+                DatabaseService.setTaskPermissionMode(ptyId, permissionMode);
+                console.error(
+                  `[HookServer] Captured permission mode for ptyId=${ptyId}: ${permissionMode}`,
+                );
+              }
             } catch (err) {
               console.error('[HookServer] Failed to parse session body:', err);
             }

@@ -45,6 +45,7 @@ export interface Task {
   useWorktree: boolean;
   autoApprove: boolean;
   claudeSessionId: string | null;
+  claudePermissionMode: string | null;
   branchCreatedByDash: boolean;
   linkedItems: LinkedItem[] | null;
   frontendPort: number | null;

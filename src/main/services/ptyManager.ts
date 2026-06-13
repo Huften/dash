@@ -388,8 +388,13 @@ export async function startDirectPty(options: {
   if (storedSessionId) {
     args.push('--resume', storedSessionId);
   }
-  if (options.autoApprove) {
-    args.push('--permission-mode', 'auto');
+  // Permission mode: prefer the mode Claude last reported for this task (captured
+  // via the SessionStart hook), so resume restores whatever the user cycled to.
+  // For a brand-new task with nothing captured yet, fall back to the yolo toggle.
+  const storedPermissionMode = DatabaseService.getTaskPermissionMode(options.id);
+  const permissionMode = storedPermissionMode ?? (options.autoApprove ? 'auto' : null);
+  if (permissionMode) {
+    args.push('--permission-mode', permissionMode);
   }
   const env = buildDirectEnv(options.isDark ?? true);
 

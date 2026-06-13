@@ -179,6 +179,24 @@ export class DatabaseService {
       .run();
   }
 
+  static getTaskPermissionMode(taskId: string): string | null {
+    const db = getDb();
+    const row = db
+      .select({ claudePermissionMode: tasks.claudePermissionMode })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .get();
+    return row?.claudePermissionMode ?? null;
+  }
+
+  static setTaskPermissionMode(taskId: string, permissionMode: string | null): void {
+    const db = getDb();
+    db.update(tasks)
+      .set({ claudePermissionMode: permissionMode, updatedAt: new Date().toISOString() })
+      .where(eq(tasks.id, taskId))
+      .run();
+  }
+
   // ── Conversations ────────────────────────────────────────
 
   static getConversations(taskId: string): Conversation[] {
@@ -251,6 +269,7 @@ export class DatabaseService {
       useWorktree: row.useWorktree ?? true,
       autoApprove: row.autoApprove ?? false,
       claudeSessionId: row.claudeSessionId ?? null,
+      claudePermissionMode: row.claudePermissionMode ?? null,
       branchCreatedByDash: row.branchCreatedByDash ?? false,
       linkedItems,
       frontendPort: row.frontendPort ?? null,
