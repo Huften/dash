@@ -26,6 +26,7 @@ interface LeftSidebarProps {
   onProjectSettings: (id: string) => void;
   tasksByProject: Record<string, Task[]>;
   activeTaskId: string | null;
+  taskDisplayName: (task: Task) => string;
   onSelectTask: (projectId: string, taskId: string) => void;
   onNewTask: (projectId: string) => void;
   onDeleteTask: (id: string) => void;
@@ -47,6 +48,7 @@ export function LeftSidebar({
   onProjectSettings,
   tasksByProject,
   activeTaskId,
+  taskDisplayName,
   onSelectTask,
   onNewTask,
   onDeleteTask,
@@ -356,7 +358,7 @@ export function LeftSidebar({
                               />
                             )}
 
-                            <span className="truncate flex-1">{task.name}</span>
+                            <span className="truncate flex-1">{taskDisplayName(task)}</span>
 
                             {/* Right slot: branch icon by default, actions on hover */}
                             <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -429,7 +431,7 @@ export function LeftSidebar({
                                     key={task.id}
                                     className="group/archived flex items-center gap-2 pl-3.5 pr-2 py-[6px] rounded-md text-[13px] text-muted-foreground/50"
                                   >
-                                    <span className="truncate flex-1">{task.name}</span>
+                                    <span className="truncate flex-1">{taskDisplayName(task)}</span>
                                     <div className="hidden group-hover/archived:flex gap-0.5 flex-shrink-0">
                                       <IconButton
                                         onClick={() => onRestoreTask(task.id)}

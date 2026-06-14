@@ -141,6 +141,11 @@ export function runMigrations(): void {
   } catch {
     /* already exists */
   }
+  try {
+    rawDb.exec(`ALTER TABLE tasks ADD COLUMN use_claude_title INTEGER DEFAULT 0`);
+  } catch {
+    /* already exists */
+  }
 
   rawDb.pragma('foreign_keys = ON');
 }
