@@ -660,6 +660,7 @@ export function App() {
       name,
       useWorktree,
       autoApprove,
+      useClaudeTitle,
       baseRef,
       existingBranch,
       pushRemote,
@@ -750,6 +751,7 @@ export function App() {
       path: taskPath,
       useWorktree,
       autoApprove,
+      useClaudeTitle,
       branchCreatedByDash: useWorktree && !!worktreeInfo && !existingBranch,
       linkedItems: linkedItems ?? null,
       frontendPort: frontendPort ?? null,
@@ -1029,7 +1031,6 @@ export function App() {
                 setCloneStatus({ loading: false, error: null });
                 setShowAddProjectModal(true);
               }}
-              onDeleteProject={handleDeleteProject}
               onProjectSettings={(id) => {
                 const p = projects.find((proj) => proj.id === id);
                 if (p) setProjectSettingsTarget(p);
@@ -1200,6 +1201,10 @@ export function App() {
             setProjectSettingsTarget((prev) =>
               prev?.id === id ? { ...prev, name: newName } : prev,
             );
+          }}
+          onDelete={async (id) => {
+            setProjectSettingsTarget(null);
+            await handleDeleteProject(id);
           }}
         />
       )}

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X } from 'lucide-react';
+import { X, Trash2, AlertTriangle } from 'lucide-react';
 import { AdoConnectionForm } from './AdoConnectionForm';
 import { isAdoRemote } from '../../shared/urls';
 import type { Project } from '../../shared/types';
@@ -8,10 +8,17 @@ interface ProjectSettingsModalProps {
   project: Project;
   onClose: () => void;
   onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
 }
 
-export function ProjectSettingsModal({ project, onClose, onRename }: ProjectSettingsModalProps) {
+export function ProjectSettingsModal({
+  project,
+  onClose,
+  onRename,
+  onDelete,
+}: ProjectSettingsModalProps) {
   const [name, setName] = useState(project.name);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   function handleSaveName() {
     const trimmed = name.trim();
@@ -75,6 +82,53 @@ export function ProjectSettingsModal({ project, onClose, onRename }: ProjectSett
               <AdoConnectionForm projectId={project.id} />
             </div>
           )}
+
+          {/* Danger zone */}
+          <div className="pt-1 border-t border-border/40">
+            <label className="block text-[12px] font-medium text-destructive/80 mb-2 mt-4">
+              Danger zone
+            </label>
+
+            {confirmingDelete ? (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3.5">
+                <div className="flex gap-2.5">
+                  <AlertTriangle
+                    size={15}
+                    strokeWidth={1.8}
+                    className="text-destructive flex-shrink-0 mt-0.5"
+                  />
+                  <p className="text-[12px] text-foreground/80 leading-relaxed">
+                    This permanently removes{' '}
+                    <span className="font-medium text-foreground">{project.name}</span> and all its
+                    tasks from Dash. Worktrees and branches on disk are not affected.
+                  </p>
+                </div>
+                <div className="flex justify-end gap-2 mt-3.5">
+                  <button
+                    onClick={() => setConfirmingDelete(false)}
+                    className="px-3 py-1.5 rounded-lg text-[12px] font-medium border border-border/60 text-foreground/70 hover:bg-accent/40 hover:text-foreground transition-all duration-150"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => onDelete(project.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-all duration-150"
+                  >
+                    <Trash2 size={12} strokeWidth={1.8} />
+                    Delete project
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmingDelete(true)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-medium border border-destructive/40 text-destructive hover:bg-destructive/10 transition-all duration-150"
+              >
+                <Trash2 size={13} strokeWidth={1.8} />
+                Delete project
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
