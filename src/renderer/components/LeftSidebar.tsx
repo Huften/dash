@@ -23,7 +23,6 @@ interface LeftSidebarProps {
   activeProjectId: string | null;
   onSelectProject: (id: string) => void;
   onOpenFolder: () => void;
-  onDeleteProject: (id: string) => void;
   onProjectSettings: (id: string) => void;
   tasksByProject: Record<string, Task[]>;
   activeTaskId: string | null;
@@ -45,7 +44,6 @@ export function LeftSidebar({
   activeProjectId,
   onSelectProject,
   onOpenFolder,
-  onDeleteProject,
   onProjectSettings,
   tasksByProject,
   activeTaskId,
@@ -261,7 +259,7 @@ export function LeftSidebar({
                   )}
 
                   {/* Project settings — hover only */}
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                  <div className="hidden group-hover:block">
                     <IconButton
                       onClick={(e) => {
                         e.stopPropagation();
@@ -276,11 +274,11 @@ export function LeftSidebar({
 
                   {/* Commit graph — visible on active project, hover on others */}
                   <div
-                    className={`transition-opacity duration-150 ${
+                    className={
                       isActive
-                        ? 'opacity-70 hover:opacity-100'
-                        : 'opacity-0 group-hover:opacity-100'
-                    }`}
+                        ? 'opacity-70 hover:opacity-100 transition-opacity duration-150'
+                        : 'hidden group-hover:block'
+                    }
                   >
                     <IconButton
                       onClick={(e) => {
@@ -296,11 +294,11 @@ export function LeftSidebar({
 
                   {/* New task — visible on active project, hover on others */}
                   <div
-                    className={`transition-opacity duration-150 ${
+                    className={
                       isActive
-                        ? 'opacity-70 hover:opacity-100'
-                        : 'opacity-0 group-hover:opacity-100'
-                    }`}
+                        ? 'opacity-70 hover:opacity-100 transition-opacity duration-150'
+                        : 'hidden group-hover:block'
+                    }
                   >
                     <IconButton
                       onClick={(e) => {
@@ -311,21 +309,6 @@ export function LeftSidebar({
                       size="sm"
                     >
                       <Plus size={13} strokeWidth={2} />
-                    </IconButton>
-                  </div>
-
-                  {/* Delete — hover only */}
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                    <IconButton
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteProject(project.id);
-                      }}
-                      title="Delete project"
-                      variant="destructive"
-                      size="sm"
-                    >
-                      <Trash2 size={13} strokeWidth={1.8} />
                     </IconButton>
                   </div>
                 </div>
@@ -354,21 +337,15 @@ export function LeftSidebar({
                             {/* Status indicator */}
                             {activity === 'waiting' ? (
                               <Tooltip label="Waiting for user">
-                                <div
-                                  className="w-[6px] h-[6px] rounded-full bg-orange-500 flex-shrink-0"
-                                />
+                                <div className="w-[6px] h-[6px] rounded-full bg-orange-500 flex-shrink-0" />
                               </Tooltip>
                             ) : activity === 'busy' ? (
                               <Tooltip label="Claude is working">
-                                <div
-                                  className="w-[6px] h-[6px] rounded-full bg-amber-400 status-pulse flex-shrink-0"
-                                />
+                                <div className="w-[6px] h-[6px] rounded-full bg-amber-400 status-pulse flex-shrink-0" />
                               </Tooltip>
                             ) : activity === 'idle' ? (
                               <Tooltip label="Idle">
-                                <div
-                                  className="w-[6px] h-[6px] rounded-full bg-emerald-400 flex-shrink-0"
-                                />
+                                <div className="w-[6px] h-[6px] rounded-full bg-emerald-400 flex-shrink-0" />
                               </Tooltip>
                             ) : null}
                             {remoteControlStates[task.id] && (
