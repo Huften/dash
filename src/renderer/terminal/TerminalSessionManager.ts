@@ -225,13 +225,16 @@ export class TerminalSessionManager {
   }
 
   private async loadGpuAddon() {
-    // Windows + Electron WebGL is the fragile path that leaves the terminal
-    // blank until a resize. Canvas is GPU-accelerated via the 2D context and
-    // far more reliable there, so prefer it on Windows and skip WebGL entirely.
+    // Both GPU renderers are unreliable on Electron for Windows: WebGL leaves
+    // the viewport blank until a manual resize, and the Canvas addon crashes in
+    // its own render path (_forEachCell → loadCell of undefined, thrown async
+    // inside xterm's render debouncer so it can't be caught). xterm's built-in
+    // DOM renderer has neither problem, so on Windows we load no GPU addon and
+    // let the terminal use the DOM renderer. Windows is dev-only here (releases
+    // target macOS/Linux), so the DOM renderer's lower throughput is fine.
     if (IS_WINDOWS) {
-      this.log('renderer: Windows detected — preferring Canvas over WebGL');
-      const ok = await this.loadCanvasAddon();
-      if (!ok) this.log('renderer: Canvas unavailable, using DOM/software');
+      this.rendererType = 'dom';
+      this.log('renderer: Windows — using built-in DOM renderer (no GPU addon)');
       return;
     }
 
