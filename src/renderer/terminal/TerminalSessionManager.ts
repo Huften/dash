@@ -1,4 +1,4 @@
-import { Terminal } from 'xterm';
+import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -8,6 +8,14 @@ import { darkTheme, lightTheme, resolveTheme } from './terminalThemes';
 
 const SNAPSHOT_DEBOUNCE_MS = 10_000;
 const MEMORY_LIMIT_BYTES = 128 * 1024 * 1024; // 128MB soft limit
+
+// Terminal rendering diagnostics. Toggle at runtime in DevTools with
+// `localStorage.setItem('dashTerminalDebug', '1')` (or '0' to silence), then
+// reload. Defaults on while we chase the Windows blank-render bug.
+const TERMINAL_DEBUG =
+  typeof localStorage === 'undefined' || localStorage.getItem('dashTerminalDebug') !== '0';
+
+const IS_WINDOWS = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
 export class TerminalSessionManager {
   readonly id: string;
@@ -48,6 +56,14 @@ export class TerminalSessionManager {
   private savedViewportY: number | null = null;
   readonly shellOnly: boolean;
   private themeId: string;
+  private rendererType: 'webgl' | 'canvas' | 'dom' = 'dom';
+
+  private log(...args: unknown[]) {
+    if (!TERMINAL_DEBUG) return;
+    // eslint-disable-next-line no-console
+    console.info(`[term ${this.id}${this.shellOnly ? ' shell' : ''}]`, ...args);
+  }
+
   constructor(opts: {
     id: string;
     cwd: string;
@@ -209,20 +225,61 @@ export class TerminalSessionManager {
   }
 
   private async loadGpuAddon() {
+    // Windows + Electron WebGL is the fragile path that leaves the terminal
+    // blank until a resize. Canvas is GPU-accelerated via the 2D context and
+    // far more reliable there, so prefer it on Windows and skip WebGL entirely.
+    if (IS_WINDOWS) {
+      this.log('renderer: Windows detected — preferring Canvas over WebGL');
+      const ok = await this.loadCanvasAddon();
+      if (!ok) this.log('renderer: Canvas unavailable, using DOM/software');
+      return;
+    }
+
     try {
       const { WebglAddon } = await import('@xterm/addon-webgl');
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
+        // Previously this just disposed and silently fell back to the DOM
+        // renderer with no repaint — leaving the viewport blank. Now we load
+        // Canvas and force a repaint so the terminal keeps rendering.
+        this.log('renderer: WebGL context lost — falling back to Canvas');
         webgl.dispose();
+        this.rendererType = 'dom';
+        void this.loadCanvasAddon().then((ok) => {
+          if (ok) this.forceRepaint('after webgl context loss');
+        });
       });
       this.terminal.loadAddon(webgl);
-    } catch {
-      try {
-        const { CanvasAddon } = await import('@xterm/addon-canvas');
-        this.terminal.loadAddon(new CanvasAddon());
-      } catch {
-        // Software renderer fallback
-      }
+      this.rendererType = 'webgl';
+      this.log('renderer: WebGL loaded');
+    } catch (err) {
+      this.log('renderer: WebGL unavailable, falling back to Canvas', err);
+      const ok = await this.loadCanvasAddon();
+      if (!ok) this.log('renderer: Canvas unavailable, using DOM/software');
+    }
+  }
+
+  private async loadCanvasAddon(): Promise<boolean> {
+    try {
+      const { CanvasAddon } = await import('@xterm/addon-canvas');
+      this.terminal.loadAddon(new CanvasAddon());
+      this.rendererType = 'canvas';
+      this.log('renderer: Canvas loaded');
+      return true;
+    } catch (err) {
+      this.rendererType = 'dom';
+      this.log('renderer: Canvas failed to load', err);
+      return false;
+    }
+  }
+
+  /** Force a full renderer repaint — what a manual window resize does implicitly. */
+  private forceRepaint(reason: string) {
+    try {
+      this.terminal.refresh(0, this.terminal.rows - 1);
+      this.log(`repaint (${reason}) rows=${this.terminal.rows} cols=${this.terminal.cols}`);
+    } catch (err) {
+      this.log(`repaint (${reason}) failed`, err);
     }
   }
 
@@ -230,6 +287,12 @@ export class TerminalSessionManager {
     const gen = ++this.attachGeneration;
     if (this.disposed) return;
     this.currentContainer = container;
+
+    const rect = container.getBoundingClientRect();
+    this.log(
+      `attach (gen ${gen}) opened=${this.opened} ` +
+        `container=${Math.round(rect.width)}x${Math.round(rect.height)}`,
+    );
 
     if (!this.opened) {
       // First time: open xterm in this container
@@ -259,7 +322,13 @@ export class TerminalSessionManager {
     this.resizeObserver = new ResizeObserver((entries) => {
       // Skip when container is collapsed/hidden to avoid resizing PTY to 0 rows
       const rect = entries[0]?.contentRect;
-      if (!rect || rect.height < 10) return;
+      if (!rect || rect.height < 10) {
+        this.log(`resize observed but skipped (height=${Math.round(rect?.height ?? 0)})`);
+        return;
+      }
+      this.log(
+        `resize observed ${Math.round(rect.width)}x${Math.round(rect.height)} → fit in 250ms`,
+      );
       if (this.fitDebounceTimer) clearTimeout(this.fitDebounceTimer);
       // 250ms debounce covers panel-transition animations (200ms) to avoid
       // fitting at intermediate sizes which causes scroll jumps and clipping
@@ -433,6 +502,22 @@ export class TerminalSessionManager {
         // causing stray "O"/"I" chars in the input field.
         this.terminal.write('\x1b[?1004l');
         this.fitAddon.fit();
+        // Force a full repaint, then again on the next frame. The GPU
+        // renderer commonly drops the very first frame after attach (GPU
+        // context/layout not yet warm on Electron/Windows), leaving the
+        // viewport blank until a manual window resize. Repainting on a
+        // later frame does what that resize would have done.
+        const rect = this.currentContainer?.getBoundingClientRect();
+        this.log(
+          `attach fit: renderer=${this.rendererType} ` +
+            `container=${Math.round(rect?.width ?? 0)}x${Math.round(rect?.height ?? 0)} ` +
+            `term=${this.terminal.cols}x${this.terminal.rows}`,
+        );
+        this.forceRepaint('attach');
+        requestAnimationFrame(() => {
+          if (gen !== this.attachGeneration) return;
+          this.forceRepaint('attach+1 frame');
+        });
         // Only the primary (Claude) terminal grabs focus on attach. The shell
         // drawer re-attaches on every task switch; auto-focusing it here would
         // steal focus from the Claude terminal when clicking a task. The drawer
@@ -618,6 +703,11 @@ export class TerminalSessionManager {
   private fit() {
     try {
       this.fitAddon.fit();
+      // Force a full repaint. The GPU renderer (WebGL/Canvas) on some
+      // platforms — notably Electron on Windows — drops frames when the
+      // dimensions don't change, leaving the viewport blank until a manual
+      // window resize. refresh() does explicitly what a resize does implicitly.
+      this.forceRepaint('fit');
       const dims = this.fitAddon.proposeDimensions();
       if (dims && dims.cols > 0 && dims.rows > 0) {
         // Skip redundant PTY resizes to avoid SIGWINCH prompt redraw
