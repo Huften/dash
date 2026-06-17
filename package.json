@@ -3,8 +3,12 @@
   "version": "0.11.3",
   "description": "Dash — Desktop app for Claude Code with git worktree management",
   "main": "dist/main/main/entry.js",
+  "packageManager": "pnpm@10.32.1",
   "author": "mhenrichsen <mads@syv.ai>, nthomsencph <nicolai@syv.ai>, FabianScott <fabian@syv.ai>",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "concurrently -n main,renderer -c blue,green \"pnpm dev:main\" \"pnpm dev:renderer\"",
     "dev:main": "tsc -p tsconfig.main.json && electron dist/main/main/entry.js --dev",
@@ -13,12 +17,14 @@
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
     "rebuild": "electron-rebuild -f -w node-pty,better-sqlite3",
+    "postinstall": "node scripts/postinstall.mjs",
     "package:mac": "pnpm build && electron-builder --mac",
     "package:linux": "pnpm build && electron-builder --linux",
     "package:win": "pnpm build && electron-builder --win",
     "test": "vitest run",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "doctor": "node scripts/doctor.mjs",
     "drizzle:generate": "drizzle-kit generate",
     "prepare": "husky"
   },
