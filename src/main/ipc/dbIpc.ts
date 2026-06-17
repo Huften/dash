@@ -57,6 +57,15 @@ export function registerDbIpc(): void {
     }
   });
 
+  ipcMain.handle('db:renameTask', (_event, args: { id: string; name: string }) => {
+    try {
+      DatabaseService.renameTask(args.id, args.name);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  });
+
   ipcMain.handle('db:deleteTask', (_event, id: string) => {
     try {
       DatabaseService.deleteTask(id);

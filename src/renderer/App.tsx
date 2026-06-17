@@ -270,9 +270,34 @@ export function App() {
   // Live Claude Code terminal titles per task (id → title). Used as the task's
   // display name when the task has `useClaudeTitle` enabled.
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
+  // Ref mirror of all tasks by id so the title listener (registered once) can
+  // read a task's current name + useClaudeTitle flag without a stale closure.
+  const tasksByIdRef = useRef<Map<string, Task>>(new Map());
+  useEffect(() => {
+    const m = new Map<string, Task>();
+    for (const list of Object.values(tasksByProject)) {
+      for (const t of list) m.set(t.id, t);
+    }
+    tasksByIdRef.current = m;
+  }, [tasksByProject]);
   useEffect(() => {
     return sessionRegistry.subscribeTitles((id, title) => {
       setTaskTitles((prev) => (prev[id] === title ? prev : { ...prev, [id]: title }));
+      // Persist Claude's title as the task name for title-following tasks so it
+      // survives an app restart — otherwise the live title is lost and the name
+      // falls back to its stored placeholder (e.g. "New task").
+      const task = tasksByIdRef.current.get(id);
+      if (task?.useClaudeTitle && task.name !== title) {
+        window.electronAPI.renameTask(id, title);
+        setTasksByProject((prev) => {
+          const list = prev[task.projectId];
+          if (!list) return prev;
+          return {
+            ...prev,
+            [task.projectId]: list.map((t) => (t.id === id ? { ...t, name: title } : t)),
+          };
+        });
+      }
     });
   }, []);
 

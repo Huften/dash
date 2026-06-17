@@ -186,6 +186,16 @@ export class DatabaseService {
       .run();
   }
 
+  /** Update a task's display name. Used to persist Claude's live title for
+   * tasks created with `useClaudeTitle` so it survives an app restart. */
+  static renameTask(id: string, name: string): void {
+    const db = getDb();
+    db.update(tasks)
+      .set({ name, updatedAt: new Date().toISOString() })
+      .where(eq(tasks.id, id))
+      .run();
+  }
+
   static deleteTask(id: string): void {
     const db = getDb();
     db.delete(tasks).where(eq(tasks.id, id)).run();

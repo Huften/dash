@@ -68,6 +68,7 @@ export interface ElectronAPI {
   saveTask: (
     task: Partial<Task> & { projectId: string; name: string; branch: string; path: string },
   ) => Promise<IpcResponse<Task>>;
+  renameTask: (id: string, name: string) => Promise<IpcResponse<void>>;
   deleteTask: (id: string) => Promise<IpcResponse<void>>;
   archiveTask: (id: string) => Promise<IpcResponse<void>>;
   restoreTask: (id: string) => Promise<IpcResponse<void>>;
